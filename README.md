@@ -78,6 +78,15 @@ Commands map a typed Discord message to a webhook URL.
 ```
 *Typing `!ping test` will send a POST request containing the arguments to that webhook. Because `allowed_users` has an ID, only that Discord user can trigger it.*
 
+> **💡 Note on Case Sensitivity**
+> Commands are **case-insensitive for the end user** (they can type `!PING` or `!Ping`). However, you must define the command keys in `routes.json` in **all lowercase** (e.g., `"ping"`, not `"Ping"`).
+>
+> **❓ Smart Help**
+> If a user types a command that doesn't exist, DashCord will automatically reply with a list of commands that the user **actually has permission to use** in that specific channel.
+
+*   **Supported Methods:** Both `"POST"` and `"GET"` are supported.
+*   **GET Requests:** If you choose `GET`, the entire JSON payload is stringified and passed as a URL query parameter (e.g., `?payload={"source":"discord", ...}`).
+
 ### 2. Defining File Uploads
 
 You can allow commands to accept attachments, or even fire automatically when a specific filetype is uploaded without a command at all.
@@ -95,6 +104,13 @@ You can allow commands to accept attachments, or even fire automatically when a 
   }
 }
 ```
+> **💡 The "Fan-out" Rule**
+> DashCord handles multiple file uploads intelligently. If a user uploads **5 files at once**, the bot will "fan-out" and trigger **5 separate webhook calls** (one for each file). This makes it much easier to build your n8n/Make workflows, as you only ever have to handle **one file at a time** in your automation logic!
+
+> **🎭 Attachment Feedback**
+> You can control how the bot replies to uploads using the `attachment_reply` block.
+> *   `mode`: Set to `"errors"` (default) to only reply if something goes wrong, `"always"` to always confirm, or `"none"` for silence.
+> *   `success_template` / `error_template`: Use `{ok}`, `{bad}`, and `{total}` as variables to customize the message.
 
 ### 3. Designing Interactive UI Panels
 
@@ -131,31 +147,67 @@ Panels create persistent messages with buttons. You can bind specific commands a
 
 *Note: Clicking the "Restart Server" button above executes the `ping` command with the argument `restart` behind the scenes, exactly as if the user typed `!ping restart`.*
 
+**Customizing Persistence per Panel:**
+If you want one panel to "jump" to the bottom every 60 seconds but another to stay put, add a `persist` block directly to the panel:
+```json
+"Server_Controls": {
+  "channels": ["123456789"],
+  "persist": {
+    "enabled": true,
+    "interval_seconds": 60,
+    "cleanup_old_active": true
+  },
+  "buttons": [...]
+}
+```
+
 ### 4. Dynamic Body Templating (Optional)
 
-If you need a specific payload structure rather than the default, you can define a `body_template` in your command configuration. DashCord will automatically fill in the `{{placeholders}}`:
+By default, DashCord sends a standardized payload to your webhook. However, if your API requires a very specific JSON structure (or if you want to drop the bot straight into an existing integration without changing the API), you can define a `body_template`.
+
+The `body_template` can be **any valid JSON structure** (deeply nested objects, arrays, etc.). DashCord will recursively scan your template and replace `{{placeholders}}` with real-time data using dot-notation.
 
 ```json
 "commands": {
-  "alert": {
-    "endpoint": "https://your-webhook...",
+  "ai-task": {
+    "endpoint": "http://192.168.1.100/run/ai",
     "method": "POST",
     "body_template": {
-      "priority": "high",
-      "triggered_by": "{{discord.user_display}}",
-      "source_channel": "{{discord.channel_name}}",
-      "original_text": "{{raw}}",
-      "file_data": "{{attachment_b64}}"
+      "settings": {
+        "priority": "high",
+        "dry_run": false
+      },
+      "user_info": {
+        "name": "{{discord.user_display}}",
+        "id": "{{discord.user_id}}"
+      },
+      "task_data": {
+        "prompt": "{{raw}}",
+        "file_name": "{{attachment.filename}}",
+        "file_base64": "{{attachment_b64}}"
+      }
     }
   }
 }
 ```
 
+**Common Placeholders You Can Use:**
+* `{{raw}}`: The full text the user typed (e.g., `!weather tomorrow`).
+* `{{args}}`: The list of arguments provided by the user (e.g., `['now', 'tomorrow']`).
+* `{{nonce}}`: A unique UUID generated for every single request. Use this for idempotency or as a database primary key.
+* `{{command}}`: The name of the command triggered.
+* `{{discord.user_id}}` / `{{discord.user_display}}`: Information about the triggering user.
+* `{{discord.channel_id}}` / `{{discord.channel_name}}`: Information about the channel.
+* `{{attachment_b64}}`: The fully encoded base64 string of the uploaded file.
+* `{{source_meta_b64}}`: A Base64-encoded JSON object containing both the `discord` and `attachment` metadata blocks.
+* `{{attachment_text}}`: The raw UTF-8 text of the file (great for `.txt` or `.json` uploads).
+* `{{attachment.filename}}`: The original name of the uploaded file.
+
 ---
 
-## 📦 What your Webhook Receives (Payload format)
+## 📦 Default Webhook Payload
 
-Whenever a command or button is triggered (and no custom template is used), your Webhook will receive a JSON POST payload like this:
+If you **do not** use a `body_template`, your Webhook will receive DashCord's default JSON POST payload. This is also the exact underlying data structure you are querying when using `{{placeholders}}` in a custom template:
 
 ```json
 {
@@ -165,15 +217,36 @@ Whenever a command or button is triggered (and no custom template is used), your
   "args": ["restart", "now"],
   "raw": "!ping restart now",
   "timestamp": "2026-02-25T12:00:00-05:00",
+  "nonce": "a1b2c3d4-...",
   "discord": {
     "guild_id": "123456...",
+    "guild_name": "My Server",
     "channel_id": "123456...",
+    "channel_name": "general",
     "user_id": "123456...",
-    "user_display": "CoolUser"
+    "user_name": "cooluser123",
+    "user_display": "CoolUser",
+    "message_id": "123456..."
   },
-  "attachment_b64": "..." 
+  "meta": {
+    "timezone": "America/New_York"
+  },
+  
+  // (The following are only included if a file was uploaded)
+  "attachment": {
+    "filename": "data.json",
+    "content_type": "application/json",
+    "size": 1024,
+    "url": "https://cdn.discordapp.com/..."
+  },
+  "attachment_text": "{\"hello\": \"world\"}",
+  "attachment_bytes_len": 1024,
+  "attachment_b64": "eyJoZWxsbyI6ICJ3b3JsZCJ9",
+  "source_meta_b64": "..."
 }
 ```
+> **💡 Pro Tip: Using the Nonce**
+> Every request includes a `nonce` (a unique UUID). If you are performing sensitive actions, like processing a payment or restarting a production server, your webhook should store this ID. If you receive a second request with the same `nonce` due to a network retry, you can safely ignore it to prevent duplicate actions (this is known as *idempotency*).
 
 > **🔑 Authentication Header**
 > The bot sends the `DASHCORD_SHARED_SECRET` (from your `.env` file) as a custom header:
