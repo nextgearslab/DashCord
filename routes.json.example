@@ -3,8 +3,8 @@
     "ping": {
       "endpoint": "https://hook.us1.make.com/your-webhook-id",
       "method": "POST",
-      "allowed_users":[],
-      "allowed_channels":[]
+      "allowed_users": [],
+      "allowed_channels": []
     },
     "upload": {
       "endpoint": "https://n8n.yourdomain.com/webhook/file-upload",
@@ -21,17 +21,44 @@
         "success_template": "📦 Successfully sent {ok} out of {total} files.",
         "error_template": "❌ Upload errors ({bad}/{total}):\n{errors}"
       }
+    },
+    "weather": {
+      "endpoint": "https://your-api.com/weather",
+      "method": "GET",
+      "allowed_channels": [112233445566778899]
+    },
+    "advanced-ai": {
+      "endpoint": "http://192.168.1.100:8000/api/run-task",
+      "method": "POST",
+      "allowed_users": [987654321098765432],
+      "accept_attachments": true,
+      "allow_without_command": true,
+      "body_template": {
+        "user_data": {
+          "id": "{{discord.user_id}}",
+          "name": "{{discord.user_display}}",
+          "channel": "{{discord.channel_name}}"
+        },
+        "task_data": {
+          "user_input": "{{raw}}",
+          "args_list": "{{args}}",
+          "request_id": "{{nonce}}",
+          "file_base64": "{{attachment_b64}}"
+        },
+        "trigger_source": "discord",
+        "dry_run": false
+      }
     }
   },
   "panels": {
     "Server_Controls": {
-      "channels":["123456789012345678"],
+      "channels": ["123456789012345678"],
       "persist": {
         "enabled": true,
         "interval_seconds": 120,
         "cleanup_old_active": true
       },
-      "buttons":[
+      "buttons": [
         {
           "label": "Restart Server",
           "command": "ping",
@@ -43,6 +70,23 @@
           "command": "ping",
           "args": ["status"],
           "style": "primary"
+        }
+      ]
+    },
+    "Home_Automation": {
+      "channels": ["112233445566778899"],
+      "buttons": [
+        {
+          "label": "Get Weather",
+          "command": "weather",
+          "args": ["now"],
+          "style": "secondary"
+        },
+        {
+          "label": "Run AI Task",
+          "command": "advanced-ai",
+          "args": ["force"],
+          "style": "success"
         }
       ]
     }
