@@ -8,11 +8,12 @@ __pycache__/
 secrets.env
 venv/
 env/
+.env.docker
 
 # scripts
 push_to_webserver.sh
 
-# Data and configurations (users should create their own)
+# Data and configurations 
 config/
 routes.json
 

@@ -320,6 +320,7 @@ DashCord is highly customizable. You can fine-tune exactly how the bot, your web
 - `COMMAND_PREFIX`: The prefix used for typed commands in chat (Default: `!`).
 - `TIMEZONE`: The timezone used for panel timestamps and payload metadata (Default: `America/New_York`).
 - `DISPLAY_UNKNOWN_COMMAND_ERROR`: If a user mistypes a command (e.g., `!wether`), the bot will reply with a helpful list of commands they actually have permission to use (Default: `true`).
+- `DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS`: A comma-separated list of channel IDs where the bot will never post an "Unknown command" error. Use this if you have other bots in the same channel so DashCord doesn't interrupt their commands (Default: empty).
 - `DASHCORD_DEBUG`: Enables verbose internal debug logging in the console (Default: `false`).
 - `ROUTES_PATH`: The file path to your routing configuration (Default: `routes.json` in the bot's root directory).
 

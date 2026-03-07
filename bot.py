@@ -58,6 +58,9 @@ VERIFY_TLS = get_env_bool("VERIFY_TLS", "true")
 DEBUG_WEBHOOK = get_env_bool("DEBUG_WEBHOOK", "0")
 DISPLAY_UNKNOWN_COMMAND_ERROR = get_env_bool("DISPLAY_UNKNOWN_COMMAND_ERROR", "true")
 
+DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS = set(
+    cid.strip() for cid in os.getenv("DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS", "").split(",") if cid.strip()
+)
 # ----------------------------
 # PANEL OPTIONS (.env)
 # ----------------------------
@@ -1090,25 +1093,26 @@ async def on_message(message: discord.Message):
 
     # ✅ SMART UNKNOWN COMMAND ERROR
     if command not in COMMANDS:
-        _dbg("TYPED unknown command=%r (known=%s) ROUTES_PATH=%r", command, sorted(COMMANDS.keys()), ROUTES_PATH)
-
-        log.warning(f"❓ User '{message.author.display_name}' ({message.author.id}) tried unknown command '{command}' in channel {message.channel.id}")
+        available_cmds = [
+            cmd for cmd in COMMANDS 
+            if is_channel_allowed(cmd, message.channel.id, silent=True) 
+            and is_user_allowed(cmd, message.author.id, silent=True)
+        ]
         
+        if not available_cmds:
+            log.warning(f"❓ Unknown command '{command}' from {message.author.display_name} - SILENCED (No routes active in this channel)")
+            return
+
+        if str(message.channel.id) in DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS:
+            log.warning(f"❓ Unknown command '{command}' from {message.author.display_name} - SILENCED (Channel is in silent list)")
+            return
+
         if DISPLAY_UNKNOWN_COMMAND_ERROR:
-            available_cmds =[]
-            
-            for cmd in COMMANDS:
-                if is_channel_allowed(cmd, message.channel.id, silent=True) and is_user_allowed(cmd, message.author.id, silent=True):
-                    available_cmds.append(cmd)
-            
-            if available_cmds:
-                cmd_list = ", ".join(f"`{COMMAND_PREFIX}{c}`" for c in sorted(available_cmds))
-                await message.reply(f"❌ Unknown command `{COMMAND_PREFIX}{command}`.\n**Available commands here:** {cmd_list}")
-            else:
-                await message.reply(f"❌ Unknown command `{COMMAND_PREFIX}{command}`.\n*There are no commands available for you in this channel.*")
+            log.warning(f"❓ Unknown command '{command}' from {message.author.display_name} - REPLIED with help list")
+            cmd_list = ", ".join(f"`{COMMAND_PREFIX}{c}`" for c in sorted(available_cmds))
+            await message.reply(f"❌ Unknown command `{COMMAND_PREFIX}{command}`.\n**Available commands here:** {cmd_list}")
                 
         return
-
     if not is_channel_allowed(command, message.channel.id):
         await message.reply("⛔ Not allowed in this channel.")
         return
