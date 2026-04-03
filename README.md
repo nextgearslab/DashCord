@@ -44,7 +44,8 @@ While platforms like n8n and Node-RED have native Discord nodes, they are often 
 - **🎭 Dynamic Body Templating:** Inject Discord metadata (like `{{discord.user_display}}` or `{{discord.channel_id}}`) directly into the JSON payload sent to your webhook, molding the data to fit your API perfectly.
 - **🔒 Security Built-In:** Restrict specific commands to specific Discord channels or user IDs. Secures outbound requests with a custom `X-DashCord-Token` header.
 - **💬 Native Discord Replies:** Your webhook can respond with JSON containing plain text or rich Discord Embeds, and the bot will cleanly post it back to the channel.
-
+- **👁️ Visual Status Indicators:** Real-time emoji reactions (⏳, ✅, ❌) let users know exactly when a command is processing, succeeded, or failed without needing extra text replies.
+- 
 ---
 
 ## 🚀 Quick Start (Docker)
@@ -323,7 +324,11 @@ DashCord is highly customizable. You can fine-tune exactly how the bot, your web
 - `DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS`: A comma-separated list of channel IDs where the bot will never post an "Unknown command" error. Use this if you have other bots in the same channel so DashCord doesn't interrupt their commands (Default: empty).
 - `DASHCORD_DEBUG`: Enables verbose internal debug logging in the console (Default: `false`).
 - `ROUTES_PATH`: The file path to your routing configuration (Default: `routes.json` in the bot's root directory).
-
+- `COMMAND_REACTION_ENABLED`: Automatically add emoji reactions to user messages to show command status (pending, success, fail) (Default: `true`).
+- `COMMAND_REACTION_PENDING`: The emoji to show while a command or file upload is being processed by your webhook (Default: `⏳`).
+- `COMMAND_REACTION_SUCCESS`: The emoji to show when a command succeeds (Default: `✅`).
+- `COMMAND_REACTION_FAIL`: The emoji to show when a command or webhook fails (Default: `❌`).
+  
 #### 🌐 Webhook & API Settings
 - `DASHCORD_SHARED_SECRET`: A secret string sent as the `X-DashCord-Token` HTTP header to secure your webhooks from unauthorized requests.
 - `HTTP_TIMEOUT_SECONDS`: How long the bot waits for your webhook to respond before throwing a timeout error (Default: `20`).

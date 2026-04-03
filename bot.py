@@ -25,7 +25,7 @@ def get_env_bool(key: str, default: str = "false") -> bool:
     """Helper to parse boolean environment variables."""
     return os.getenv(key, default).strip().lower() in ("1", "true", "yes", "y", "on")
 
-DASHCORD_DEBUG = get_env_bool("DASHCORD_DEBUG", "0")
+DASHCORD_DEBUG = get_env_bool("DASHCORD_DEBUG", "false") 
 
 log = logging.getLogger("dashcord")
 log.setLevel(logging.DEBUG if DASHCORD_DEBUG else logging.INFO)
@@ -55,12 +55,21 @@ load_dotenv("secrets.env", override=True)
 ROUTES_PATH = os.getenv("ROUTES_PATH", os.path.join(BASE_DIR, "routes.json"))
 
 VERIFY_TLS = get_env_bool("VERIFY_TLS", "true")
-DEBUG_WEBHOOK = get_env_bool("DEBUG_WEBHOOK", "0")
+DEBUG_WEBHOOK = get_env_bool("DEBUG_WEBHOOK", "false")
 DISPLAY_UNKNOWN_COMMAND_ERROR = get_env_bool("DISPLAY_UNKNOWN_COMMAND_ERROR", "true")
 
 DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS = set(
     cid.strip() for cid in os.getenv("DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS", "").split(",") if cid.strip()
 )
+
+# ----------------------------
+# REACTION OPTIONS (.env)
+# ----------------------------
+COMMAND_REACTION_ENABLED = get_env_bool("COMMAND_REACTION_ENABLED", "true")
+COMMAND_REACTION_PENDING = os.getenv("COMMAND_REACTION_PENDING", "⏳")
+COMMAND_REACTION_SUCCESS = os.getenv("COMMAND_REACTION_SUCCESS", "✅")
+COMMAND_REACTION_FAIL    = os.getenv("COMMAND_REACTION_FAIL", "❌")
+
 # ----------------------------
 # PANEL OPTIONS (.env)
 # ----------------------------
@@ -111,6 +120,22 @@ log.info(f"BOOT routes={ROUTES_PATH} prefix={COMMAND_PREFIX!r} cmds={sorted(COMM
 # ----------------------------
 # HELPERS
 # ----------------------------
+
+async def _add_reaction_safe(message: discord.Message, emoji: str) -> None:
+    if not COMMAND_REACTION_ENABLED:
+        return
+    try:
+        await message.add_reaction(emoji)
+    except Exception as e:
+        _dbg("Could not add reaction %s to message %s: %s", emoji, message.id, e)
+
+async def _remove_reaction_safe(message: discord.Message, emoji: str) -> None:
+    if not COMMAND_REACTION_ENABLED or not bot.user:
+        return
+    try:
+        await message.remove_reaction(emoji, bot.user)
+    except Exception as e:
+        _dbg("Could not remove reaction %s from message %s: %s", emoji, message.id, e)
 
 def _message_time_utc(message: discord.Message) -> datetime:
     # created_at is UTC-aware in discord.py
@@ -181,6 +206,7 @@ async def _fanout_attachments_to_command(message: discord.Message, command: str,
         await message.reply(f"❌ No matching attachment found. Expected: {want}. Got: {got}")
         return
 
+    await _add_reaction_safe(message, COMMAND_REACTION_PENDING)
 
     ok = 0
     bad = 0
@@ -233,6 +259,12 @@ async def _fanout_attachments_to_command(message: discord.Message, command: str,
 
     total = len(atts)
     has_errors = (bad > 0)
+
+    await _remove_reaction_safe(message, COMMAND_REACTION_PENDING)
+    if has_errors:
+        await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
+    elif ok > 0:
+        await _add_reaction_safe(message, COMMAND_REACTION_SUCCESS)
 
     # Decide whether to reply at all
     should_reply = (
@@ -1140,11 +1172,23 @@ async def on_message(message: discord.Message):
     
     log.info(f"⚡ User '{message.author.display_name}' triggered command '{command}' in channel {message.channel.id}")
 
+    await _add_reaction_safe(message, COMMAND_REACTION_PENDING)
+
     try:
         data = await post_to_webhook_async(command, payload)
+        
+        await _remove_reaction_safe(message, COMMAND_REACTION_PENDING)
+        if data is not None:
+            await _add_reaction_safe(message, COMMAND_REACTION_SUCCESS)
+        else:
+            await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
+        # ------------------------------
+            
         await send_reply(message.channel, data)
     except Exception as e:
         log.error(f"⚠️ Exception triggering command '{command}': {e}", exc_info=True)
+        await _remove_reaction_safe(message, COMMAND_REACTION_PENDING)
+        await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
         await message.reply(f"⚠️ Trigger failed: {type(e).__name__}: {e}")
 
 
