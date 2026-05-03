@@ -33,6 +33,10 @@
       "allowed_users": [987654321098765432],
       "accept_attachments": true,
       "allow_without_command": true,
+      "headers": {
+        "Authorization": "Bearer YOUR_CUSTOM_TOKEN_HERE",
+        "X-Custom-Flag": "true"
+      },
       "body_template": {
         "user_data": {
           "id": "{{discord.user_id}}",

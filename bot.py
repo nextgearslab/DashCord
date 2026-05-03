@@ -668,8 +668,14 @@ def post_to_webhook(command: str, payload: dict) -> dict:
         out_json = _render_body_template(body_template, payload)
 
     headers = {"Content-Type": "application/json"}
+    
     if DASHCORD_SHARED_SECRET:
         headers["X-DashCord-Token"] = DASHCORD_SHARED_SECRET
+
+    custom_headers = cfg.get("headers")
+    if isinstance(custom_headers, dict):
+        for h_key, h_val in custom_headers.items():
+            headers[h_key] = str(h_val)
 
     def parse_response(r: requests.Response) -> dict:
         _dbg("WEBHOOK POST cmd=%s status=%s", command, r.status_code)
@@ -1182,7 +1188,6 @@ async def on_message(message: discord.Message):
             await _add_reaction_safe(message, COMMAND_REACTION_SUCCESS)
         else:
             await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
-        # ------------------------------
             
         await send_reply(message.channel, data)
     except Exception as e:

@@ -224,6 +224,28 @@ The `body_template` can be **any valid JSON structure** (deeply nested objects, 
 * `{{attachment_text}}`: The raw UTF-8 text of the file (great for `.txt` or `.json` uploads).
 * `{{attachment.filename}}`: The original name of the uploaded file.
 
+### 5. Custom HTTP Headers (Optional)
+
+By default, DashCord secures your webhooks using the `X-DashCord-Token` header globally defined in your `.env`. However, if you want to bypass your automation tool and point DashCord *directly* at a third-party API (like OpenAI, Gantry, or GitHub), you can define custom HTTP headers per-command.
+
+```json
+"commands": {
+  "chat": {
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "method": "POST",
+    "headers": {
+      "Authorization": "Bearer sk-proj-YourApiKeyHere",
+      "OpenAI-Organization": "org-123456"
+    },
+    "body_template": {
+      "model": "gpt-4",
+      "messages": [{"role": "user", "content": "{{raw}}"}]
+    }
+  }
+}
+```
+*Note: Any custom headers defined in `routes.json` will override the global default token if they share the same key. If omitted, the bot falls back to using the global `.env` secret.*
+
 ---
 
 ## 📦 Default Webhook Payload
