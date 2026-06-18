@@ -52,45 +52,105 @@
         "trigger_source": "discord",
         "dry_run": false
       }
+    },
+    "googlehealth": {
+      "endpoint": "https://n8n.yourdomain.com/webhook/googlehealth",
+      "method": "POST",
+      "allowed_users": [],
+      "allowed_channels": []
     }
   },
   "panels": {
     "Server_Controls": {
-      "channels": ["123456789012345678"],
+      "channels": ["123456789012345678", "876543210987654321"],
       "persist": {
         "enabled": true,
         "interval_seconds": 120,
         "cleanup_old_active": true
+      },
+      "embed": {
+        "title": "🖥️ Production Server Controls",
+        "description": "Critical infrastructure management. Authorized users only.",
+        "color": "#e74c3c"
       },
       "buttons": [
         {
           "label": "Restart Server",
           "command": "ping",
           "args": ["restart"],
-          "style": "danger"
+          "style": "danger",
+          "emoji": "⚠️"
         },
         {
           "label": "Check Status",
           "command": "ping",
           "args": ["status"],
-          "style": "primary"
+          "style": "primary",
+          "emoji": "📡"
+        },
+        {
+          "label": "Deploy Update",
+          "command": "ping",
+          "args": ["deploy"],
+          "style": "success",
+          "emoji": "🚀",
+          "modal": {
+            "title": "Deploy New Container",
+            "inputs": [
+              { "id": "image_tag", "label": "Docker Tag / Version", "placeholder": "e.g. latest, v2.1.0", "required": true },
+              { "id": "deploy_notes", "label": "Release Notes", "placeholder": "What changed in this deployment?", "required": false, "long": true }
+            ]
+          }
         }
       ]
     },
     "Home_Automation": {
       "channels": ["112233445566778899"],
-      "buttons": [
+      "embed": {
+        "title": "🏠 Smart Home Hub",
+        "color": "#3498db"
+      },
+      "selects": [
         {
-          "label": "Get Weather",
-          "command": "weather",
-          "args": ["now"],
-          "style": "secondary"
-        },
+          "placeholder": "🌤️ Weather & Environment...",
+          "options": [
+            { "label": "Get Local Weather", "command": "weather", "args": ["now"], "emoji": "🌤️" },
+            { "label": "Check Indoor Temp", "command": "weather", "args": ["indoor"], "emoji": "🌡️" }
+          ]
+        }
+      ],
+      "buttons": [
         {
           "label": "Run AI Task",
           "command": "advanced-ai",
           "args": ["force"],
-          "style": "success"
+          "style": "success",
+          "emoji": "🧠"
+        },
+        { 
+          "label": "Log Weight", 
+          "command": "googlehealth", 
+          "args": ["log_weight"], 
+          "style": "primary", 
+          "emoji": "⚖️",
+          "modal": {
+            "title": "Log Daily Weight",
+            "inputs": [
+              { 
+                "id": "weight_lbs", 
+                "label": "Weight (lbs)", 
+                "placeholder": "e.g. 185.2", 
+                "required": true 
+              },
+              { 
+                "id": "notes", 
+                "label": "Notes (Optional)", 
+                "placeholder": "How are you feeling?", 
+                "required": false,
+                "long": true 
+              }
+            ]
+          }
         }
       ]
     }

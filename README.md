@@ -23,12 +23,13 @@ Originally built for **n8n**, this bot works flawlessly with **Make (Integromat)
 
 Instead of hardcoding new Discord commands every time you want to automate something, you simply define them in a `routes.json` file. The bot acts as a universal headless bridge between Discord and your automation platform.
 
-| 🎛️ Interactive UI Panels | 📁 Advanced File Handling (TTS) |
+| 🎛️ Interactive UI Dashboards | 📁 Advanced File Handling (TTS) |
 | :--- | :--- |
-| ![Weather Panel](docs/display1.png) | ![TTS File Upload](docs/display4.png) |
-| **📊 System Automation Logs** | **🏃 Manual Chat Commands** |
-| ![Sync Manager Log](docs/display3.png) | ![Fitbit Command](docs/display2.png) |
-
+| ![Interactive UI Dashboards](docs/dashboard_v2.png) | ![TTS File Upload](docs/tts_v2.png) |
+| **📋 Interactive Forms (Modals)** | **📊 System Automation Logs** |
+| ![Interactive Modals](docs/modal_v2.png) | ![System Automation Logs](docs/sync_v2.png) |
+| **🏃 Manual Chat Commands** | **🌤️ Dynamic Weather Forecasts** |
+| ![Manual Chat Commands](docs/fitbit_v2.png) | ![Dynamic Weather Panel](docs/weather_v2.png) |
 ## ❓ Why use DashCord?
 
 While platforms like n8n and Node-RED have native Discord nodes, they are often difficult to use for advanced UI management. DashCord acts as a specialized middleware that solves three specific pain points:
@@ -45,7 +46,7 @@ While platforms like n8n and Node-RED have native Discord nodes, they are often 
 - **🔒 Security Built-In:** Restrict specific commands to specific Discord channels or user IDs. Secures outbound requests with a custom `X-DashCord-Token` header.
 - **💬 Native Discord Replies:** Your webhook can respond with JSON containing plain text or rich Discord Embeds, and the bot will cleanly post it back to the channel.
 - **👁️ Visual Status Indicators:** Real-time emoji reactions (⏳, ✅, ❌) let users know exactly when a command is processing, succeeded, or failed without needing extra text replies.
-- 
+
 ---
 
 ## 🚀 Quick Start (Docker)
@@ -133,43 +134,45 @@ You can allow commands to accept attachments, or even fire automatically when a 
 > *   `mode`: Set to `"errors"` (default) to only reply if something goes wrong, `"always"` to always confirm, or `"none"` for silence.
 > *   `success_template` / `error_template`: Use `{ok}`, `{bad}`, and `{total}` as variables to customize the message.
 
-### 3. Designing Interactive UI Panels
+### 3. Designing Interactive UI Dashboards (Embeds, Buttons & Dropdowns)
 
-Panels create persistent messages with buttons. You can bind specific commands and background arguments to each button.
+Panels create persistent, interactive dashboards in your Discord channels. You can bind specific commands to buttons and **Dropdown Menus (Selects)**, and wrap them in beautiful **Custom Embeds**.
 
 ```json
 "panels": {
-  "Server_Controls": {
-    "channels":["1029384756"],
-    "buttons":[
+  "Home_Automation": {
+    "channels": ["112233445566778899"],
+    "embed": {
+      "title": "🏠 Smart Home Hub",
+      "color": "#3498db"
+    },
+    "selects": [
       {
-        "label": "Restart Server",
-        "command": "ping",
-        "args": ["restart"],
-        "style": "danger"
-      },
-      {
-        "label": "Check Status",
-        "command": "ping",
-        "args": ["status"],
-        "style": "primary"
+        "placeholder": "🌤️ Weather & Environment...",
+        "options": [
+          { "label": "Get Local Weather", "command": "weather", "args": ["now"], "emoji": "🌤️" },
+          { "label": "Check Indoor Temp", "command": "weather", "args": ["indoor"], "emoji": "🌡️" }
+        ]
       }
+    ],
+    "buttons": [
+      { "label": "Run AI Task", "command": "advanced-ai", "args": ["force"], "style": "success", "emoji": "🧠" }
     ]
   }
 }
 ```
-**Button Styles Available:**
-| Style Name | Discord Color | Best Used For |
-| :--- | :--- | :--- |
-| `primary` | Blurple (Blue) | Main actions |
-| `secondary`| Grey | Neutral / Informational |
-| `success` | Green | Confirmations / Starts |
-| `danger` | Red | Restarts / Stops / Deletes |
 
-*Note: Clicking the "Restart Server" button above executes the `ping` command with the argument `restart` behind the scenes, exactly as if the user typed `!ping restart`.*
+*   **Embeds:** Adding an `"embed"` block automatically upgrades your panel from plain text to a rich, colored dashboard with titles, descriptions, and thumbnails.
+*   **Selects (Dropdowns):** A massive space-saver. Group related commands into clean select menus (max 5 select menus per panel, up to 25 options each).
+    *   `placeholder`: The helper text displayed in the menu before an option is selected.
+    *   `label`: The primary text displayed for the option.
+    *   `description` (Optional): A subtitle displayed beneath the label inside the open dropdown menu.
+*   **Buttons:** Standard quick-action buttons. 
+    *   **Styles Available:** `primary` (Blurple), `secondary` (Grey), `success` (Green), `danger` (Red).
+*   **Emojis:** You can add `"emoji"` keys to both buttons and select options to make your dashboard visually intuitive.
 
 **Customizing Persistence per Panel:**
-If you want one panel to "jump" to the bottom every 60 seconds but another to stay put, add a `persist` block directly to the panel:
+If you want one panel to "jump" to the bottom of the chat every 60 seconds but another to stay put, add a `persist` block directly to the panel:
 ```json
 "Server_Controls": {
   "channels": ["123456789"],
@@ -182,12 +185,69 @@ If you want one panel to "jump" to the bottom every 60 seconds but another to st
 }
 ```
 
-### 4. Dynamic Body Templating (Optional)
+---
+
+### 4. Interactive Forms (Modals)
+
+DashCord allows you to turn **any button into a pop-up form**. Instead of just sending a predefined command when a button is clicked, Discord will prompt the user to type in data (like logging an entry or submitting a query), and *then* send that data to your webhook.
+
+To enable this, add a `"modal"` dictionary to any button:
+
+```json
+{
+  "label": "Deploy Update",
+  "command": "ping",
+  "args": ["deploy"],
+  "style": "success",
+  "emoji": "🚀",
+  "modal": {
+    "title": "Deploy New Container",
+    "inputs": [
+      { "id": "image_tag", "label": "Docker Tag / Version", "placeholder": "e.g. latest, v2.1.0", "required": true },
+      { "id": "deploy_notes", "label": "Release Notes", "placeholder": "What changed in this deployment?", "required": false, "long": true }
+    ]
+  }
+}
+```
+
+*   **Modal Schema Options:**
+    *   `title`: The header displayed at the top of the pop-up modal.
+    *   `inputs`: An array of text fields (Max: 5 fields per modal).
+    *   `id`: The unique tracking key. The text entered by the user will be mapped to this ID under `"modal_inputs"` in the webhook payload.
+    *   `label`: The field title displayed directly above the text box.
+    *   `placeholder`: Light grey placeholder text shown inside the empty text box.
+    *   `required`: Set to `true` to force the user to fill out the field before submitting (Default: `true`).
+    *   `long`: Set to `true` to render a paragraph text box. Omit or set to `false` for a single-line input.
+
+**The Webhook Payload:**
+When the user submits the form, DashCord will merge their typed answers into your webhook payload under the `"modal_inputs"` key. Your automation platform (n8n, Make) will receive this:
+
+```json
+{
+  "source": "discord",
+  "event_type": "panel_action",
+  "command": "ping",
+  "args": ["deploy"],
+  "timestamp": "2026-06-18T17:15:48-04:00",
+  "discord": {
+    "user_display": "D🪐PE",
+    "channel_name": "devops-general"
+  },
+  "modal_inputs": {
+    "image_tag": "v2.1.0",
+    "deploy_notes": "Added support for interactive dropdown menus."
+  }
+}
+```
+You can now pull `{{ $json.body.modal_inputs.image_tag }}` directly into your database or deployment nodes!
+
+### 5. Dynamic Body Templating (Optional)
 
 By default, DashCord sends a standardized payload to your webhook. However, if your API requires a very specific JSON structure (or if you want to drop the bot straight into an existing integration without changing the API), you can define a `body_template`.
 
 The `body_template` can be **any valid JSON structure** (deeply nested objects, arrays, etc.). DashCord will recursively scan your template and replace `{{placeholders}}` with real-time data using dot-notation.
 
+**Example Template in `routes.json`:**
 ```json
 "commands": {
   "ai-task": {
@@ -212,6 +272,27 @@ The `body_template` can be **any valid JSON structure** (deeply nested objects, 
 }
 ```
 
+**What your Webhook Actually Receives:**
+When a user uploads a file called `vocal_sample.wav` and types `!ai-task transcribe`, DashCord compiles the template on the fly. Your webhook will receive this perfectly formatted, custom payload:
+
+```json
+{
+  "settings": {
+    "priority": "high",
+    "dry_run": false
+  },
+  "user_info": {
+    "name": "D🪐PE",
+    "id": "941490597930348614"
+  },
+  "task_data": {
+    "prompt": "!ai-task transcribe",
+    "file_name": "vocal_sample.wav",
+    "file_base64": "U29tZSBmYWtlIGJhc2U2NCBiaW5hcnkgZGF0YS4uLg=="
+  }
+}
+```
+
 **Common Placeholders You Can Use:**
 * `{{raw}}`: The full text the user typed (e.g., `!weather tomorrow`).
 * `{{args}}`: The list of arguments provided by the user (e.g., `['now', 'tomorrow']`).
@@ -223,8 +304,9 @@ The `body_template` can be **any valid JSON structure** (deeply nested objects, 
 * `{{source_meta_b64}}`: A Base64-encoded JSON object containing both the `discord` and `attachment` metadata blocks.
 * `{{attachment_text}}`: The raw UTF-8 text of the file (great for `.txt` or `.json` uploads).
 * `{{attachment.filename}}`: The original name of the uploaded file.
+* `{{modal_inputs.your_field_id}}`: The raw text typed by a user into a specific modal input box (e.g., `{{modal_inputs.weight_lbs}}`).
 
-### 5. Custom HTTP Headers (Optional)
+### 6. Custom HTTP Headers (Optional)
 
 By default, DashCord secures your webhooks using the `X-DashCord-Token` header globally defined in your `.env`. However, if you want to bypass your automation tool and point DashCord *directly* at a third-party API (like OpenAI, Gantry, or GitHub), you can define custom HTTP headers per-command.
 
@@ -273,6 +355,12 @@ If you **do not** use a `body_template`, your Webhook will receive DashCord's de
   },
   "meta": {
     "timezone": "America/New_York"
+  },
+  
+  // (The following is only included if a modal form was submitted)
+  "modal_inputs": {
+    "your_input_id_1": "value typed by user",
+    "your_input_id_2": "value typed by user"
   },
   
   // (The following are only included if a file was uploaded)
