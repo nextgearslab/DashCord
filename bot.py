@@ -517,12 +517,11 @@ async def _find_existing_panel_message(channel: discord.abc.Messageable, panel_n
     if not getattr(channel, "id", None) or not bot.user:
         return None
 
-    ACTIVE_CONTENT = f"🧩 **DashCord Panel** ({panel_name})"
-
     try:
         async for msg in channel.history(limit=PANEL_SCAN_LIMIT):
             if msg.author and msg.author.id == bot.user.id:
-                if isinstance(msg.content, str) and msg.content.strip() == ACTIVE_CONTENT:
+                # check if it is the panel by seeing if the name is in the content
+                if isinstance(msg.content, str) and f"({panel_name})" in msg.content:
                     log.info(f"🔍 Found existing panel '{panel_name}' in channel {channel.id}. Attaching to it.")
                     _set_panel_msg_id(channel.id, panel_name, msg.id)
                     return msg
@@ -531,6 +530,7 @@ async def _find_existing_panel_message(channel: discord.abc.Messageable, panel_n
 
     return None
 
+
 async def _post_panel_to_channel(
     channel: discord.abc.Messageable,
     panel_name: str,
@@ -538,7 +538,7 @@ async def _post_panel_to_channel(
     *,
     force_new: bool = False
 ) -> None:
-    content = f"🧩 **DashCord Panel** ({panel_name})"
+    content, embed = _build_panel_message(panel_name, panel_cfg)
     view = DashPanel(panel_name, panel_cfg)
 
     if not force_new:
@@ -546,16 +546,15 @@ async def _post_panel_to_channel(
         if existing:
             try:
                 _dbg("Updating existing message ID %s for panel '%s'", existing.id, panel_name)
-                await existing.edit(content=content, view=view)
+                await existing.edit(content=content, embed=embed, view=view)
                 _set_active_panel_msg_id(channel.id, panel_name, existing.id)
                 return
             except Exception as e:
                 log.warning(f"⚠️ Found existing panel '{panel_name}' but failed to edit it. Falling back to posting new. Error: {e}")
 
-
     log.info(f"🆕 Posting new panel '{panel_name}' to channel {getattr(channel, 'id', 'unknown')}")
 
-    sent = await channel.send(content, view=view)
+    sent = await channel.send(content=content, embed=embed, view=view)
     if getattr(channel, "id", None):
         _set_panel_msg_id(channel.id, panel_name, sent.id)
         _set_active_panel_msg_id(channel.id, panel_name, sent.id)
@@ -852,11 +851,141 @@ STYLE_MAP = {
     "danger": discord.ButtonStyle.danger,
 }
 
+def _build_panel_message(panel_name: str, panel_cfg: dict) -> tuple[str, discord.Embed | None]:
+    """Generates the content and Embed for a panel based on its config."""
+    content = panel_cfg.get("content", f"🧩 **DashCord Panel** ({panel_name})")
+    
+    embed_cfg = panel_cfg.get("embed")
+    embed = None
+    if isinstance(embed_cfg, dict):
+        color_hex = str(embed_cfg.get("color", "0x2b2d31")).replace("#", "0x")
+        embed = discord.Embed(
+            title=embed_cfg.get("title", f"Panel: {panel_name}"),
+            description=embed_cfg.get("description", ""),
+            color=int(color_hex, 16)
+        )
+        if embed_cfg.get("thumbnail"):
+            embed.set_thumbnail(url=embed_cfg.get("thumbnail"))
+        if embed_cfg.get("image"):
+            embed.set_image(url=embed_cfg.get("image"))
+            
+    return content, embed
+
+async def process_panel_action(interaction: discord.Interaction, panel_name: str, command: str, args: list, modal_data: dict = None):
+    """Shared execution logic for Buttons, Selects, and Modals."""
+    log.info(f"🖱️ User '{interaction.user.display_name}' clicked action '{command}' on panel '{panel_name}'")
+
+    cfg = _get_cmd_cfg(command)
+    if cfg.get("accept_attachments"):
+        log.warning(f"⚠️ User '{interaction.user.display_name}' clicked action '{command}' but it requires a file upload.")
+        await interaction.followup.send(
+            "❌ This command requires a file upload. Use the typed command with an attached file.",
+            ephemeral=True,
+        )
+        return
+
+    payload = build_payload(
+        event_type="panel_action",
+        command=command,
+        args=args,
+        raw=f"[panel] {command} {' '.join(args)}".strip(),
+        guild=interaction.guild,
+        channel=interaction.channel,
+        user=interaction.user,
+        interaction_id=str(interaction.id),
+    )
+    if modal_data:
+        payload["modal_inputs"] = modal_data
+
+    # 1. Archive immediately
+    try:
+        msg = interaction.message
+        if msg:
+            content, embed = _build_panel_message(panel_name, PANELS.get(panel_name, {}))
+            
+            # Only update the text if STATUS_LINE is true
+            if PANEL_STATUS_LINE:
+                try:
+                    ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p")
+                except Exception:
+                    ts = datetime.now().strftime("%I:%M %p").lstrip("0")
+                user = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "Someone")
+                last_cmd = f"{command} {' '.join(args)}".strip()
+                content = f"{content}\nLast: `{last_cmd}` • {user} • {ts}"
+
+            archived_view = DashPanel(
+                panel_name,
+                PANELS.get(panel_name, {}) or {},
+                disabled=PANEL_ARCHIVE_DISABLE_BUTTONS
+            )
+            await msg.edit(content=content, embed=embed, view=archived_view)
+    except Exception as e:
+        log.warning(f"⚠️ Failed to edit/archive panel message (Missing permissions?): {e}")
+
+    # 2. Spawn the new one immediately
+    if PANEL_SPAWN_NEW_ON_CLICK and interaction.channel:
+        try:
+            await _post_panel_to_channel(
+                interaction.channel,
+                panel_name,
+                PANELS.get(panel_name, {}) or {},
+                force_new=True,
+            )
+        except Exception as e:
+            log.error(f"⚠️ Failed to spawn new panel '{panel_name}' after button click: {e}", exc_info=True)
+
+    # 3. Webhook call
+    try:
+        _dbg("Webhook button call start cmd=%s", command)
+        data = await post_to_webhook_async(command, payload)
+        _dbg("Webhook button call end cmd=%s", command)
+
+        reply = (data or {}).get("reply") or {}
+        if not isinstance(reply, dict):
+            reply = {"content": str(reply)}
+
+        suppress = bool(reply.get("suppress") or reply.get("supress"))
+        reply_content = (reply.get("content") or "").strip()
+
+        if suppress or not reply_content:
+            return
+
+        await interaction.followup.send(content=reply_content[:2000], ephemeral=False)
+
+    except Exception as e:
+        log.error(f"⚠️ Exception triggering button command '{command}': {e}", exc_info=True)
+        await interaction.followup.send(f"⚠️ Trigger failed: {type(e).__name__}: {e}", ephemeral=True)
+
+
+class DashModal(discord.ui.Modal):
+    def __init__(self, panel_name: str, command: str, args: list, modal_cfg: dict):
+        super().__init__(title=modal_cfg.get("title", "Input Required")[:45])
+        self.panel_name = panel_name
+        self.command = command
+        self.args = args
+        self.inputs_dict = {}
+
+        for inp in modal_cfg.get("inputs", [])[:5]:
+            ti = discord.ui.TextInput(
+                label=inp.get("label", "Input")[:45],
+                custom_id=inp.get("id"),
+                style=discord.TextStyle.paragraph if inp.get("long") else discord.TextStyle.short,
+                placeholder=inp.get("placeholder", ""),
+                required=inp.get("required", True)
+            )
+            self.add_item(ti)
+            self.inputs_dict[inp.get("id")] = ti
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        modal_data = {k: v.value for k, v in self.inputs_dict.items()}
+        await process_panel_action(interaction, self.panel_name, self.command, self.args, modal_data)
+
 class DashButton(discord.ui.Button):
-    def __init__(self, panel_name: str, cfg: dict):
+    def __init__(self, panel_name: str, cfg: dict, index: int):
         label = cfg.get("label", "Button")
         command = cfg.get("command")
-        args = cfg.get("args", []) or[]
+        args = cfg.get("args", []) or []
         style_name = (cfg.get("style") or "secondary").lower()
 
         if not isinstance(command, str) or not command:
@@ -864,13 +993,16 @@ class DashButton(discord.ui.Button):
 
         super().__init__(
             label=label,
+            emoji=cfg.get("emoji"),
             style=STYLE_MAP.get(style_name, discord.ButtonStyle.secondary),
-            custom_id=f"dashcord:{panel_name}:{command}:{'-'.join(args)}"
+            # Added index to guarantee unique IDs
+            custom_id=f"dashcord:btn:{panel_name}:{index}:{command}:{'-'.join(args)}"[:100]
         )
 
         self.panel_name = panel_name
         self.command = command
         self.args = args
+        self.cfg = cfg
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.channel:
@@ -885,106 +1017,78 @@ class DashButton(discord.ui.Button):
             await interaction.response.send_message("⛔ Not allowed for your user.", ephemeral=True)
             return
 
-        # Defer silently
-        await interaction.response.defer(ephemeral=True)
-
-        log.info(f"🖱️ User '{interaction.user.display_name}' clicked button '{self.command}' on panel '{self.panel_name}'")
-
-        cfg = _get_cmd_cfg(self.command)
-        if cfg.get("accept_attachments"):
-            log.warning(f"⚠️ User '{interaction.user.display_name}' clicked button '{self.command}' but it requires a file upload.")
-            await interaction.followup.send(
-                "❌ This command requires a file upload. Use the typed command with an attached file.",
-                ephemeral=True,
-            )
+        if "modal" in self.cfg:
+            await interaction.response.send_modal(DashModal(self.panel_name, self.command, self.args, self.cfg["modal"]))
             return
 
-        payload = build_payload(
-            event_type="button",
-            command=self.command,
-            args=self.args,
-            raw=f"[button] {self.command} {' '.join(self.args)}".strip(),
-            guild=interaction.guild,
-            channel=interaction.channel,
-            user=interaction.user,
-            interaction_id=str(interaction.id),
+        await interaction.response.defer(ephemeral=True)
+        await process_panel_action(interaction, self.panel_name, self.command, self.args)
+
+
+class DashSelect(discord.ui.Select):
+    def __init__(self, panel_name: str, select_cfg: dict, index: int):
+        self.panel_name = panel_name
+        self.select_cfg = select_cfg
+        
+        options = []
+        for i, opt in enumerate(select_cfg.get("options", [])[:25]):
+            cmd = opt.get("command")
+            args_str = "|".join(opt.get("args", []))
+            val = f"{i}::{cmd}::{args_str}"
+            
+            options.append(discord.SelectOption(
+                label=opt.get("label", "Option")[:100],
+                value=val[:100],
+                emoji=opt.get("emoji"),
+                description=opt.get("description")[:100] if opt.get("description") else None
+            ))
+            
+        super().__init__(
+            placeholder=select_cfg.get("placeholder", "Select an option...")[:150],
+            options=options,
+            # Added index to guarantee unique IDs across multiple dropdowns
+            custom_id=f"dashcord:sel:{panel_name}:{index}"[:100]
         )
 
-        async def _archive_this_panel_message() -> None:
-            try:
-                msg = interaction.message
-                if not msg:
-                    return
-
-                content = msg.content
-                # Only update the text if STATUS_LINE is true
-                if PANEL_STATUS_LINE:
-                    try:
-                        ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p")
-                    except Exception:
-                        ts = datetime.now().strftime("%I:%M %p").lstrip("0")
-                    user = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "Someone")
-                    last_cmd = f"{self.command} {' '.join(self.args)}".strip()
-                    content = f"🧩 **DashCord Panel** ({self.panel_name})\nLast: `{last_cmd}` • {user} • {ts}"
-
-                # Always edit the view to apply the 'disabled' state
-                archived_view = DashPanel(
-                    self.panel_name,
-                    PANELS.get(self.panel_name, {}) or {},
-                    disabled=PANEL_ARCHIVE_DISABLE_BUTTONS
-                )
-                await msg.edit(content=content, view=archived_view)
-            except Exception as e:
-                log.warning(f"⚠️ Failed to edit/archive panel message (Missing permissions?): {e}")
-
-        async def _spawn_new_panel() -> None:
-            if not PANEL_SPAWN_NEW_ON_CLICK or not interaction.channel:
-                return
-            try:
-                await _post_panel_to_channel(
-                    interaction.channel,
-                    self.panel_name,
-                    PANELS.get(self.panel_name, {}) or {},
-                    force_new=True,
-                )
-            except Exception as e:
-                log.error(f"⚠️ Failed to spawn new panel '{self.panel_name}' after button click: {e}", exc_info=True)
+    async def callback(self, interaction: discord.Interaction):
+        if not self.values or not interaction.channel: 
+            return
         
-        # 1. Archive immediately
-        await _archive_this_panel_message()
+        parts = self.values[0].split("::")
+        command = parts[1]
+        args = parts[2].split("|") if parts[2] else []
         
-        # 2. Spawn the new one immediately so it's ready even if the webhook is slow or fails
-        await _spawn_new_panel()
-            
-        try:
-            _dbg("Webhook button call start cmd=%s", self.command)
-            data = await post_to_webhook_async(self.command, payload)
-            _dbg("Webhook button call end cmd=%s", self.command)
+        if not is_channel_allowed(command, interaction.channel.id):
+            await interaction.response.send_message("⛔ Not allowed in this channel.", ephemeral=True)
+            return
 
-            reply = (data or {}).get("reply") or {}
-            if not isinstance(reply, dict):
-                reply = {"content": str(reply)}
+        if not is_user_allowed(command, interaction.user.id):
+            await interaction.response.send_message("⛔ Not allowed for your user.", ephemeral=True)
+            return
 
-            suppress = bool(reply.get("suppress") or reply.get("supress"))
-            content = (reply.get("content") or "").strip()
+        for opt in self.options: 
+            opt.default = False
 
+        await interaction.response.defer(ephemeral=True)
+        await process_panel_action(interaction, self.panel_name, command, args)
 
-            if suppress or not content:
-                return
-
-            await interaction.followup.send(content=content[:2000], ephemeral=False)
-
-        except Exception as e:
-            log.error(f"⚠️ Exception triggering button command '{self.command}': {e}", exc_info=True)
-            await interaction.followup.send(f"⚠️ Trigger failed: {type(e).__name__}: {e}", ephemeral=True)
 
 class DashPanel(discord.ui.View):
     def __init__(self, panel_name: str, panel_cfg: dict, *, disabled: bool = False):
         super().__init__(timeout=None)
-        for btn_cfg in (panel_cfg.get("buttons") or[]):
-            b = DashButton(panel_name, btn_cfg)
+        
+        # Enumerate gives us an index (0, 1, 2...) for each button
+        for i, btn_cfg in enumerate(panel_cfg.get("buttons") or []):
+            b = DashButton(panel_name, btn_cfg, index=i)
             b.disabled = disabled
             self.add_item(b)
+            
+        # Enumerate gives us an index (0, 1, 2...) for each dropdown menu
+        for i, sel_cfg in enumerate(panel_cfg.get("selects") or []):
+            s = DashSelect(panel_name, sel_cfg, index=i)
+            s.disabled = disabled
+            self.add_item(s)
+
 
 
 async def post_panels():
