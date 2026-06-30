@@ -25,11 +25,12 @@ Instead of hardcoding new Discord commands every time you want to automate somet
 
 | 🎛️ Interactive UI Dashboards | 📁 Advanced File Handling (TTS) |
 | :--- | :--- |
-| ![Interactive UI Dashboards](docs/dashboard_v2.png) | ![TTS File Upload](docs/tts_v2.png) |
+| ![Interactive UI Dashboards](docs/dashboard_v3.png) | ![TTS File Upload](docs/tts_v2.png) |
 | **📋 Interactive Forms (Modals)** | **📊 System Automation Logs** |
 | ![Interactive Modals](docs/modal_v2.png) | ![System Automation Logs](docs/sync_v2.png) |
 | **🏃 Manual Chat Commands** | **🌤️ Dynamic Weather Forecasts** |
 | ![Manual Chat Commands](docs/fitbit_v2.png) | ![Dynamic Weather Panel](docs/weather_v2.png) |
+
 ## ❓ Why use DashCord?
 
 While platforms like n8n and Node-RED have native Discord nodes, they are often difficult to use for advanced UI management. DashCord acts as a specialized middleware that solves three specific pain points:
@@ -78,6 +79,22 @@ chmod +x start.sh
 > Because this bot reads chat commands (`!weather`), you **must** enable the **Message Content Intent**.
 > Go to the [Discord Developer Portal](https://discord.com/developers/applications) -> Your Bot -> **Bot** tab -> Scroll down to **Privileged Gateway Intents** -> Turn ON **Message Content Intent**.
 
+### 🌐 Running on Alternative Ports (Local Overrides)
+If port `8080` is already in use on your host machine, or you need to mount local development variables without modifying tracked Git files, you can use a `docker-compose.override.yml` file. 
+
+Create a file named `docker-compose.override.yml` in the root directory:
+
+```yaml
+services:
+  dashcord:
+    ports: !override
+      - "8082:8080" # Binds external port 8082 on your host machine
+    volumes:
+      - ./secrets.env:/app/secrets.env
+    extra_hosts:
+      - "n8n.local:192.168.1.102" # Map internal local LAN domains
+```
+      
 ---
 
 ## ⚙️ Configuration File (`routes.json`)
@@ -93,12 +110,17 @@ Commands map a typed Discord message to a webhook URL.
   "ping": {
     "endpoint": "https://your-automation-tool.com/webhook/ping",
     "method": "POST",
+    "panel_persist_delay": 1.5,
     "allowed_users": ["1234567890"],
     "allowed_channels":[]
   }
 }
 ```
 *Typing `!ping test` will send a POST request containing the arguments to that webhook. Because `allowed_users` has an ID, only that Discord user can trigger it.*
+
+> **💡 Handling Race Conditions (`panel_persist_delay`)**
+> If your automation platform (like n8n) replies to a button click but *also* sends secondary follow-up messages a moment later, the bot might jump the panel to the bottom too fast, causing the panel to end up *above* your automation's follow-up messages. 
+> To fix this, you can add `"panel_persist_delay": 1.5` (seconds) to the **command** configuration. This tells the bot to wait before jumping the panel to the bottom, mitigating the race condition.
 
 > **💡 Note on Case Sensitivity**
 > Commands are **case-insensitive for the end user** (they can type `!PING` or `!Ping`). However, you must define the command keys in `routes.json` in **all lowercase** (e.g., `"ping"`, not `"Ping"`).
@@ -169,6 +191,8 @@ Panels create persistent, interactive dashboards in your Discord channels. You c
     *   `description` (Optional): A subtitle displayed beneath the label inside the open dropdown menu.
 *   **Buttons:** Standard quick-action buttons. 
     *   **Styles Available:** `primary` (Blurple), `secondary` (Grey), `success` (Green), `danger` (Red).
+*   **Text Content & Titles:** You can add raw text above your embed using the `"content"` key. If you want to remove the default `🧩 **DashCord Panel** (name)` header, set `"show_title": false`.
+*   **Dynamic API Security:** Add `"api_protected": true` to completely block the API from viewing or modifying a panel, or `"api_writable": true` to allow it.
 *   **Emojis:** You can add `"emoji"` keys to both buttons and select options to make your dashboard visually intuitive.
 
 **Customizing Persistence per Panel:**
@@ -296,6 +320,7 @@ When a user uploads a file called `vocal_sample.wav` and types `!ai-task transcr
 **Common Placeholders You Can Use:**
 * `{{raw}}`: The full text the user typed (e.g., `!weather tomorrow`).
 * `{{args}}`: The list of arguments provided by the user (e.g., `['now', 'tomorrow']`).
+* `{{args.0}}`, `{{args.1}}`, etc.: Access individual arguments by their index (e.g., `{{args.0}}` retrieves the first argument typed after the command).
 * `{{nonce}}`: A unique UUID generated for every single request. Use this for idempotency or as a database primary key.
 * `{{command}}`: The name of the command triggered.
 * `{{discord.user_id}}` / `{{discord.user_display}}`: Information about the triggering user.
@@ -422,6 +447,281 @@ DashCord fully supports Discord embeds. Just pass an array of embed objects:
 
 ---
 
+## 📡 Dynamic API (Programmatic Routing)
+
+DashCord provides a built-in REST API allowing you to create, update, read, and delete commands and panels at runtime. Changes made via the API are saved to a separate `dynamic_routes.json` file and persist across bot restarts.
+
+This is incredibly powerful if you want your automation tools (n8n, Make, etc.) to dynamically spawn, update, or destroy UI panels in Discord on the fly.
+
+### 1. Configuration & Authentication
+Enable the API in your `.env` file:
+```ini
+API_ENABLED=true
+API_PORT=8080
+DYNAMIC_ROUTES_PATH=config/dynamic_routes.json
+
+# If false, the API is blocked from modifying anything hardcoded in routes.json
+API_ALLOW_STATIC_OVERWRITE=false 
+```
+
+All requests require your shared secret passed in the headers:
+```http
+X-DashCord-Token: your_secret_here
+```
+
+### 2. Endpoint & Schema
+**`POST /api/dynamic`**
+
+```json
+{
+  "type": "panel", 
+  "action": "upsert",
+  "id": "my_element_id",
+  "config": { ... }
+}
+```
+
+*   **`type`**: `"panel"` or `"command"`.
+*   **`action`**: 
+    *   `get`: Returns the JSON config for the specified `id`. (If `id` is omitted, it returns your entire active inventory).
+    *   `upsert`: Creates or updates the item in memory and saves it to disk. Uses **deep merging**, so you only need to provide the fields you want to change.
+    *   `refresh`: Same as `upsert`, but for panels, it immediately triggers a Discord message edit to reflect the new UI in the chat.
+    *   `delete`: Removes the item, deletes it from disk, and removes the associated panel message from Discord.
+*   **`id`**: The unique key for the command or panel.
+*   **`config`**: The configuration object (uses the exact same schema as `routes.json`).
+
+### 3. Security Flags & Shadowing (Strict Read-Only Guarantee)
+
+> **🔒 Hard Guarantee: `routes.json` is Strictly Read-Only**
+> DashCord never opens `routes.json` in write mode. It is physically impossible for the bot to modify, overwrite, or delete your static `routes.json` file on disk under any configuration or setting. You do not need to worry about the bot altering your core configuration files.
+
+#### How "Shadowing" Works (In-Memory Overwrites)
+When `API_ALLOW_STATIC_OVERWRITE` is set to `true`, the term "overwrite" refers strictly to **runtime memory**, not your filesystem. Here is exactly what happens when you modify a static route via the API:
+
+1. **Memory Load:** At startup, DashCord reads your static `routes.json` file into memory.
+2. **Dynamic Overlay:** It then reads `dynamic_routes.json` and overlays (shadows) those configurations on top of the active memory state.
+3. **API Writes:** When you edit or delete a static route via the API, the changes are saved **only** to `dynamic_routes.json`. Your original `routes.json` file on disk remains completely untouched and pristine.
+4. **API Deletions:** If you "delete" a static route via the API, the deletion is noted in runtime memory and the active Discord panel is removed, but your physical `routes.json` file is never altered.
+
+#### Per-Item API Permissions
+You can override default API behaviors on a per-item basis directly inside your read-only `routes.json` file:
+*   `"api_writable": true` — Allows the API to modify or refresh this specific static item at runtime (with all changes written safely to `dynamic_routes.json`).
+*   `"api_protected": true` — Completely hides the item from the API. It will not appear in programmatic `get` requests and returns a `403 Forbidden` if targeted by an edit.
+
+> **💡 Best Practice:** Use `routes.json` for fixed, read-only system infrastructure. If you plan to heavily manage or dynamically update a panel via external automation tools (like n8n), do not define it in `routes.json` at all. Have your automation tool generate it entirely via the API so it lives 100% within the dynamic routing system.
+
+---
+
+### API Examples
+
+**1. Retrieve All Configurations**  
+Dump the active configuration of all panels (both static and dynamic).
+```bash
+curl -X POST http://127.0.0.1:8080/api/dynamic \
+  -H "Content-Type: application/json" \
+  -H "X-DashCord-Token: YOUR_SECRET" \
+  -d '{"type": "panel", "action": "get"}'
+```
+
+*Response (200 OK):*
+```json
+{
+  "status": "success",
+  "panels": {
+    "pc_power": {
+      "channels": [1517700723616514130],
+      "persist": {
+        "enabled": true,
+        "interval_seconds": 120,
+        "cleanup_old_active": true
+      },
+      "embed": {
+        "title": "🖥️ PC Power Control",
+        "description": "Send a Wake-on-LAN magic packet to wake devices.",
+        "color": "#2ecc71"
+      },
+      "buttons": [
+        {
+          "label": "Wake PC",
+          "command": "wake-on-lan",
+          "args": ["a1:f8:c8:b5:75:b0", "192.168.1.61"],
+          "style": "success",
+          "emoji": "⚡"
+        }
+      ]
+    }
+  }
+}
+```
+
+**2. Create a Panel**  
+Create a brand new panel with buttons and dropdowns.
+```bash
+curl -X POST http://127.0.0.1:8080/api/dynamic \
+  -H "Content-Type: application/json" \
+  -H "X-DashCord-Token: YOUR_SECRET" \
+  -d '{
+    "type": "panel",
+    "action": "upsert",
+    "id": "advanced_test_panel",
+    "config": {
+      "channels": [11227196329312276],
+      "show_title": true,
+      "content": "⚠️ System offline. Performing maintenance.",
+      "embed": {
+        "title": "🛠️ Advanced UI Test",
+        "description": "This panel features Dropdowns and Modals!",
+        "color": "#e74c3c"
+      },
+      "buttons": [
+        {
+          "label": "Open Form",
+          "command": "ping",
+          "style": "primary",
+          "emoji": "📝",
+          "modal": {
+            "title": "Feedback Form",
+            "inputs": [
+              {
+                "id": "feedback_text",
+                "label": "What do you think of this?",
+                "placeholder": "It is great...",
+                "long": true,
+                "required": true
+              }
+            ]
+          }
+        }
+      ],
+      "selects": [
+        {
+          "placeholder": "Choose a ping type...",
+          "options": [
+            { "label": "Ping Server", "command": "ping", "args": ["server"], "emoji": "🖥️", "description": "Check server status" },
+            { "label": "Ping Network", "command": "ping", "args": ["network"], "emoji": "🌐", "description": "Check network status" }
+          ]
+        }
+      ]
+    }
+  }'
+```
+
+*Response (200 OK):*
+```json
+{
+  "status": "success",
+  "message": "Panel 'advanced_test_panel' upserted",
+  "results": [
+    {
+      "channel_id": 11227196329312276,
+      "message_id": "1521635316388073654"
+    }
+  ]
+}
+```
+
+**3. Partially Update (Refresh) Panel Content & State**  
+DashCord's API uses deep-merging. You can change specific properties like the raw text `content` or embed aspects (`description`, `color`) without re-sending your original channels, buttons, or selects. 
+
+Using the `"action": "refresh"` payload tells the bot to immediately edit the existing Discord message in-place to show the new state.
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/dynamic \
+  -H "Content-Type: application/json" \
+  -H "X-DashCord-Token: YOUR_SECRET" \
+  -d '{
+    "type": "panel",
+    "action": "refresh",
+    "id": "advanced_test_panel",
+    "config": {
+      "content": "✅ Maintenance complete! All systems operational.",
+      "embed": {
+        "description": "The dynamic update was successfully applied.",
+        "color": "#2ecc71"
+      }
+    }
+  }'
+```
+
+*Response (200 OK):*
+```json
+{
+  "status": "success",
+  "message": "Panel 'advanced_test_panel' refreshed",
+  "results": [
+    {
+      "channel_id": 11227196329312276,
+      "message_id": "1521635316388073654"
+    }
+  ]
+}
+```
+*(In Discord, the red warning panel instantly transitions to a green success state, keeping the original interaction buttons and dropdown selects intact.)*
+
+**4. Retrieve a Single Panel Configuration**  
+```bash
+curl -X POST http://127.0.0.1:8080/api/dynamic \
+  -H "Content-Type: application/json" \
+  -H "X-DashCord-Token: YOUR_SECRET" \
+  -d '{"type": "panel", "action": "get", "id": "advanced_test_panel"}'
+```
+
+*Response (200 OK):*
+```json
+{
+  "status": "success",
+  "id": "advanced_test_panel",
+  "config": {
+    "channels": [11227196329312276],
+    "show_title": true,
+    "content": "✅ Maintenance complete! All systems operational.",
+    "embed": {
+      "title": "🛠️ Advanced UI Test",
+      "description": "The dynamic update was successfully applied.",
+      "color": "#2ecc71"
+    },
+    "buttons": [
+      {
+        "label": "Open Form",
+        "command": "ping",
+        "style": "primary",
+        "emoji": "📝",
+        "modal": {
+          "title": "Feedback Form",
+          "inputs": [
+            {
+              "id": "feedback_text",
+              "label": "What do you think of this?",
+              "placeholder": "It is great...",
+              "long": true,
+              "required": true
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+```
+
+**5. Delete a Panel**  
+```bash
+curl -X POST http://127.0.0.1:8080/api/dynamic \
+  -H "Content-Type: application/json" \
+  -H "X-DashCord-Token: YOUR_SECRET" \
+  -d '{"type": "panel", "action": "delete", "id": "advanced_test_panel"}'
+```
+
+*Response (200 OK):*
+```json
+{
+  "status": "success",
+  "message": "Panel 'advanced_test_panel' deleted"
+}
+```
+
+---
+
 ### 🔧 Pro Configuration (.env)
 
 DashCord is highly customizable. You can fine-tune exactly how the bot, your webhooks, and your interactive panels behave by modifying your `.env` file. 
@@ -434,18 +734,25 @@ DashCord is highly customizable. You can fine-tune exactly how the bot, your web
 - `DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS`: A comma-separated list of channel IDs where the bot will never post an "Unknown command" error. Use this if you have other bots in the same channel so DashCord doesn't interrupt their commands (Default: empty).
 - `DASHCORD_DEBUG`: Enables verbose internal debug logging in the console (Default: `false`).
 - `ROUTES_PATH`: The file path to your routing configuration (Default: `routes.json` in the bot's root directory).
+- `DYNAMIC_ROUTES_PATH`: The file path to your dynamic routing configuration (Default: `dynamic_routes.json` in the bot's config directory).
 - `COMMAND_REACTION_ENABLED`: Automatically add emoji reactions to user messages to show command status (pending, success, fail) (Default: `true`).
 - `COMMAND_REACTION_PENDING`: The emoji to show while a command or file upload is being processed by your webhook (Default: `⏳`).
 - `COMMAND_REACTION_SUCCESS`: The emoji to show when a command succeeds (Default: `✅`).
 - `COMMAND_REACTION_FAIL`: The emoji to show when a command or webhook fails (Default: `❌`).
   
-#### 🌐 Webhook & API Settings
+#### 🌐 Webhook Settings
 - `DASHCORD_SHARED_SECRET`: A secret string sent as the `X-DashCord-Token` HTTP header to secure your webhooks from unauthorized requests.
 - `HTTP_TIMEOUT_SECONDS`: How long the bot waits for your webhook to respond before throwing a timeout error (Default: `20`).
 - `VERIFY_TLS`: Whether to verify SSL/TLS certificates when hitting your webhook URLs. Set to `false` if you are using self-signed certs on a local network (Default: `true`).
 - `DEBUG_WEBHOOK`: Prints beautifully formatted, raw webhook request and response payloads directly to the console for API troubleshooting (Default: `false`).
 
+#### 📡 API Server Settings
+- `API_ENABLED`: Turns on the local programmatic REST API (Default: `false`).
+- `API_PORT`: The port the API binds to (Default: `8080`).
+- `API_ALLOW_STATIC_OVERWRITE`: If `true`, the API is permitted to edit or delete routes that were hardcoded in `routes.json`. If `false`, it can only manage dynamic routes (Default: `false`).
+
 #### 🎛️ Panel Interaction & Spawning
+- `PANEL_SHOW_TITLE_DEFAULT`: Whether panels should automatically include the `🧩 **DashCord Panel** ({name})` title header above the embed. (Default: `true`).
 - `PANEL_SPAWN_NEW_ON_CLICK`: Post a fresh copy of the panel at the bottom of the chat automatically after a user clicks a button (Default: `true`).
 - `PANEL_STATUS_LINE`: When a button is clicked, update the old panel's text to show an audit log of who clicked it (e.g., `Last: !ping restart • CoolUser • 4:05 PM`) (Default: `true`).
 - `PANEL_ARCHIVE_DISABLE_BUTTONS`: When a button is clicked, permanently grey-out/disable the buttons on that specific message so users must use the newest panel at the bottom (Default: `true`).
@@ -454,6 +761,8 @@ DashCord is highly customizable. You can fine-tune exactly how the bot, your web
 
 #### 🧹 Panel Persistence & Cleanup
 *Persistence is the bot's ability to keep panels at the bottom of the chat so they don't get lost when users are talking.*
+- `PANEL_PERSIST_ON_RESPONSE`: If `true`, the bot will immediately jump the panel to the bottom of the chat after a user clicks a button and a response is returned. (Default: `true`).
+- `PANEL_PERSIST_ON_RESPONSE_DELAY`: How many seconds to wait before moving the panel to the bottom after a response. Highly useful if your automation sends secondary follow-up messages and you want the panel to jump *after* those finish sending (Default: `0`).
 - `PANEL_PERSIST_DEFAULT`: The global default for whether panels should automatically "jump" to the bottom of the chat (Default: `false`). *(Note: You can override this per-panel in `routes.json`)*.
 - `PANEL_PERSIST_INTERVAL_SECONDS`: How often the background loop checks if chat activity has buried your panels (Default: `45`).
 - `PANEL_PERSIST_CLEANUP_OLD_ACTIVE`: When the bot moves a panel to the bottom of the chat, it deletes the old one to prevent duplicates (Default: `true`).
