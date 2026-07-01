@@ -14,6 +14,8 @@ from datetime import timezone
 import requests
 from dotenv import load_dotenv
 
+from aiohttp import web
+
 import discord
 from discord.ext import commands
 from discord.ext import tasks
@@ -53,6 +55,7 @@ load_dotenv()
 load_dotenv("secrets.env", override=True)
 
 ROUTES_PATH = os.getenv("ROUTES_PATH", os.path.join(BASE_DIR, "routes.json"))
+DYNAMIC_ROUTES_PATH = os.getenv("DYNAMIC_ROUTES_PATH", os.path.join(BASE_DIR, "config/dynamic_routes.json"))
 
 VERIFY_TLS = get_env_bool("VERIFY_TLS", "true")
 DEBUG_WEBHOOK = get_env_bool("DEBUG_WEBHOOK", "false")
@@ -73,16 +76,23 @@ COMMAND_REACTION_FAIL    = os.getenv("COMMAND_REACTION_FAIL", "❌")
 # ----------------------------
 # PANEL OPTIONS (.env)
 # ----------------------------
-PANEL_REPOST_ON_STARTUP       = get_env_bool("PANEL_REPOST_ON_STARTUP", "true")
-PANEL_REPOST_ON_CLICK         = get_env_bool("PANEL_REPOST_ON_CLICK", "false")
-PANEL_DELETE_OLD_PANELS       = get_env_bool("PANEL_DELETE_OLD_PANELS", "true")
-PANEL_SCAN_LIMIT              = int(os.getenv("PANEL_SCAN_LIMIT", "50"))
-PANEL_STATUS_LINE             = get_env_bool("PANEL_STATUS_LINE", "true")
-PANEL_SPAWN_NEW_ON_CLICK      = get_env_bool("PANEL_SPAWN_NEW_ON_CLICK", "true")
-PANEL_ARCHIVE_DISABLE_BUTTONS = get_env_bool("PANEL_ARCHIVE_DISABLE_BUTTONS", "true")
-PANEL_FORCE_NEW_ON_STARTUP    = get_env_bool("PANEL_FORCE_NEW_ON_STARTUP", "true")
-PANEL_PERSIST_DEFAULT         = get_env_bool("PANEL_PERSIST_DEFAULT", "false")
-PANEL_PERSIST_INTERVAL_SECONDS = int(os.getenv("PANEL_PERSIST_INTERVAL_SECONDS", "45"))
+PANEL_SHOW_TITLE_DEFAULT         = get_env_bool("PANEL_SHOW_TITLE_DEFAULT", "true")
+PANEL_REPOST_ON_STARTUP          = get_env_bool("PANEL_REPOST_ON_STARTUP", "true")
+PANEL_DELETE_OLD_PANELS          = get_env_bool("PANEL_DELETE_OLD_PANELS", "true")
+PANEL_SCAN_LIMIT                 = int(os.getenv("PANEL_SCAN_LIMIT", "50"))
+PANEL_STATUS_LINE                = get_env_bool("PANEL_STATUS_LINE", "true")
+PANEL_STATUS_EMOJI_PENDING       = os.getenv("PANEL_STATUS_EMOJI_PENDING", "⏳")
+PANEL_STATUS_EMOJI_SUCCESS       = os.getenv("PANEL_STATUS_EMOJI_SUCCESS", "✅")
+PANEL_STATUS_EMOJI_FAIL          = os.getenv("PANEL_STATUS_EMOJI_FAIL", "❌")
+PANEL_STATUS_EMOJI_IN_EMBED      = get_env_bool("PANEL_STATUS_EMOJI_IN_EMBED", "true")
+PANEL_STATUS_EMOJI_TITLE         = get_env_bool("PANEL_STATUS_EMOJI_TITLE", "true")
+PANEL_SPAWN_NEW_ON_CLICK         = get_env_bool("PANEL_SPAWN_NEW_ON_CLICK", "true")
+PANEL_ARCHIVE_DISABLE_BUTTONS    = get_env_bool("PANEL_ARCHIVE_DISABLE_BUTTONS", "true")
+PANEL_FORCE_NEW_ON_STARTUP       = get_env_bool("PANEL_FORCE_NEW_ON_STARTUP", "true")
+PANEL_PERSIST_DEFAULT            = get_env_bool("PANEL_PERSIST_DEFAULT", "false")
+PANEL_PERSIST_INTERVAL_SECONDS   = int(os.getenv("PANEL_PERSIST_INTERVAL_SECONDS", "45"))
+PANEL_PERSIST_ON_RESPONSE        = get_env_bool("PANEL_PERSIST_ON_RESPONSE", "true") 
+PANEL_PERSIST_ON_RESPONSE_DELAY  = float(os.getenv("PANEL_PERSIST_ON_RESPONSE_DELAY", "0"))
 PANEL_PERSIST_CLEANUP_OLD_ACTIVE = get_env_bool("PANEL_PERSIST_CLEANUP_OLD_ACTIVE", "true")
 
 # channel_id -> { panel_name -> message_id }
@@ -98,12 +108,15 @@ TIMEZONE = os.getenv("TIMEZONE", "America/New_York")
 DASHCORD_SHARED_SECRET = os.getenv("DASHCORD_SHARED_SECRET", "")
 
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "20"))
+API_ENABLED = get_env_bool("API_ENABLED", "false")
+API_PORT = int(os.getenv("API_PORT", "8080"))
+API_ALLOW_STATIC_OVERWRITE = get_env_bool("API_ALLOW_STATIC_OVERWRITE", "false")
 
 PLACEHOLDER_RE = re.compile(r"\{\{([a-zA-Z0-9_.]+)\}\}")
 
 
 # ----------------------------
-# LOAD ROUTES.JSON
+# LOAD ROUTES.JSON & DYNAMIC ROUTES
 # ----------------------------
 if not os.path.exists(ROUTES_PATH):
     raise RuntimeError(f"routes.json not found at: {ROUTES_PATH}")
@@ -111,9 +124,36 @@ if not os.path.exists(ROUTES_PATH):
 with open(ROUTES_PATH, "r", encoding="utf-8") as f:
     ROUTES = json.load(f)
     
+STATIC_COMMANDS = ROUTES.get("commands", {}) or {}
+STATIC_PANELS = ROUTES.get("panels", {}) or {}
 
-COMMANDS = ROUTES.get("commands", {}) or {}
-PANELS = ROUTES.get("panels", {}) or {}
+DYNAMIC_COMMANDS = {}
+DYNAMIC_PANELS = {}
+
+if os.path.exists(DYNAMIC_ROUTES_PATH):
+    try:
+        with open(DYNAMIC_ROUTES_PATH, "r", encoding="utf-8") as f:
+            dyn = json.load(f)
+            DYNAMIC_COMMANDS = dyn.get("commands", {}) or {}
+            DYNAMIC_PANELS = dyn.get("panels", {}) or {}
+            log.info(f"Loaded {len(DYNAMIC_COMMANDS)} dynamic commands and {len(DYNAMIC_PANELS)} dynamic panels.")
+    except Exception as e:
+        log.error(f"Failed to load dynamic routes from {DYNAMIC_ROUTES_PATH}: {e}")
+
+# Merged active states
+COMMANDS = {**STATIC_COMMANDS, **DYNAMIC_COMMANDS}
+PANELS = {**STATIC_PANELS, **DYNAMIC_PANELS}
+
+def _save_dynamic_routes():
+    try:
+        data = {
+            "commands": DYNAMIC_COMMANDS,
+            "panels": DYNAMIC_PANELS
+        }
+        with open(DYNAMIC_ROUTES_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        log.error(f"⚠️ Failed to save dynamic routes: {e}")
 
 log.info(f"BOOT routes={ROUTES_PATH} prefix={COMMAND_PREFIX!r} cmds={sorted(COMMANDS.keys())}")
 
@@ -190,6 +230,15 @@ def _is_one_or_many_json_objects(text: str) -> bool:
 
 def _clone_payload(payload: dict) -> dict:
     return json.loads(json.dumps(payload))
+
+def _deep_update(d, u):
+    """Deep merges dict 'u' into dict 'd' safely."""
+    for k, v in u.items():
+        if isinstance(v, dict) and k in d and isinstance(d[k], dict):
+            _deep_update(d[k], v)
+        else:
+            d[k] = v
+    return d
 
 async def _fanout_attachments_to_command(message: discord.Message, command: str, base_payload: dict) -> None:
     cfg = _get_cmd_cfg(command)
@@ -395,6 +444,8 @@ def _render_body_template(tpl: Any, payload: dict) -> Any:
             for part in key.split("."):
                 if isinstance(cur, dict) and part in cur:
                     cur = cur[part]
+                elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+                    cur = cur[int(part)]
                 else:
                     cur = ""
                     break
@@ -502,21 +553,43 @@ async def _delete_existing_panel_message(channel: discord.abc.Messageable, panel
     try:
         async for msg in channel.history(limit=PANEL_SCAN_LIMIT):  # type: ignore[attr-defined]
             if msg.author and bot.user and msg.author.id == bot.user.id:
-                if isinstance(msg.content, str) and msg.content.startswith("🧩"):
-                    if f"({panel_name})" in msg.content:
-                        try:
-                            await msg.delete()
-        
-                            log.info(f"🧹 Cleaned up old panel '{panel_name}' (ID: {msg.id}) from history")
-                        except Exception as e:                
-                            log.warning(f"⚠️ Failed to delete old panel '{panel_name}' (ID: {msg.id}) during cleanup: {e}")
+                match = False
+                if isinstance(msg.content, str) and f"({panel_name})" in msg.content:
+                    match = True
+                else:
+                    for action_row in msg.components:
+                        for child in action_row.children:
+                            cid = getattr(child, "custom_id", "") or ""
+                            if cid.startswith(f"dashcord:btn:{panel_name}:") or cid.startswith(f"dashcord:sel:{panel_name}:"):
+                                match = True
+                                break
+                        if match:
+                            break
+                
+                if match:
+                    try:
+                        await msg.delete()
+                        log.info(f"🧹 Cleaned up old panel '{panel_name}' (ID: {msg.id}) from history")
+                    except Exception as e:                
+                        log.warning(f"⚠️ Failed to delete old panel '{panel_name}' (ID: {msg.id}) during cleanup: {e}")
     except Exception as e:
         log.warning(f"⚠️ Failed to scan history for cleanup in channel {channel.id}: {e}")
-
+        
 async def _find_existing_panel_message(channel: discord.abc.Messageable, panel_name: str):
     if not getattr(channel, "id", None) or not bot.user:
         return None
 
+    # 1. State cache lookup (Fastest, survives edits)
+    stored = _get_panel_msg_id(channel.id, panel_name)
+    if stored:
+        try:
+            msg = await channel.fetch_message(int(stored))
+            if msg and msg.author and msg.author.id == bot.user.id:
+                return msg
+        except Exception:
+            pass
+
+    # 2. History scan fallback (Survives bot restarts)
     try:
         async for msg in channel.history(limit=PANEL_SCAN_LIMIT):
             if msg.author and msg.author.id == bot.user.id:
@@ -525,11 +598,20 @@ async def _find_existing_panel_message(channel: discord.abc.Messageable, panel_n
                     log.info(f"🔍 Found existing panel '{panel_name}' in channel {channel.id}. Attaching to it.")
                     _set_panel_msg_id(channel.id, panel_name, msg.id)
                     return msg
+                
+                # Check components (Buttons/Dropdowns have hidden IDs)
+                for action_row in msg.components:
+                    for child in action_row.children:
+                        cid = getattr(child, "custom_id", "") or ""
+                        # If a button or select matches this panel's internal ID
+                        if cid.startswith(f"dashcord:btn:{panel_name}:") or cid.startswith(f"dashcord:sel:{panel_name}:"):
+                            log.info(f"🔍 Found existing panel '{panel_name}' via component ID.")
+                            _set_panel_msg_id(channel.id, panel_name, msg.id)
+                            return msg
     except Exception as e:
         log.warning(f"⚠️ Failed to scan for existing panel '{panel_name}' in channel {channel.id}: {e}")
 
     return None
-
 
 async def _post_panel_to_channel(
     channel: discord.abc.Messageable,
@@ -728,6 +810,11 @@ def post_to_webhook(command: str, payload: dict) -> dict:
         if not isinstance(data["reply"], dict):
             data["reply"] = {"content": str(data["reply"])}
 
+        if "stdout" in data and not data["reply"].get("content"):
+            stdout_str = str(data["stdout"]).strip()
+            if stdout_str:
+                data["reply"]["content"] = f"```\n{stdout_str}\n```"
+                
         # ---- DEBUG PARSED ----
         if DEBUG_WEBHOOK:
             reply_obj = data.get("reply")
@@ -851,10 +938,28 @@ STYLE_MAP = {
     "danger": discord.ButtonStyle.danger,
 }
 
-def _build_panel_message(panel_name: str, panel_cfg: dict) -> tuple[str, discord.Embed | None]:
+def _build_panel_message(panel_name: str, panel_cfg: dict) -> tuple[str | None, discord.Embed | None]:
     """Generates the content and Embed for a panel based on its config."""
-    content = panel_cfg.get("content", f"🧩 **DashCord Panel** ({panel_name})")
     
+    # 1. Determine if we show the DashCord Title Header
+    # Priority: 1. panel config override, 2. global env default
+    show_title = panel_cfg.get("show_title", PANEL_SHOW_TITLE_DEFAULT)
+    
+    parts = []
+    
+    # Add the Title Header if enabled
+    if show_title:
+        parts.append(f"🧩 **DashCord Panel** ({panel_name})")
+        
+    # Add Custom Content from routes.json if it exists
+    custom_content = panel_cfg.get("content")
+    if custom_content:
+        parts.append(str(custom_content).strip())
+        
+    # Join them with a newline (or None if both are empty)
+    content = "\n".join(parts) if parts else None
+    
+    # 2. Build the Embed (standard logic)
     embed_cfg = panel_cfg.get("embed")
     embed = None
     if isinstance(embed_cfg, dict):
@@ -869,7 +974,27 @@ def _build_panel_message(panel_name: str, panel_cfg: dict) -> tuple[str, discord
         if embed_cfg.get("image"):
             embed.set_image(url=embed_cfg.get("image"))
             
+    # 3. Emergency Fallback: Discord rejects empty messages
+    if not content and not embed:
+        content = f"🧩 **DashCord Panel** ({panel_name})"
+        
     return content, embed
+
+def trigger_immediate_persist(channel_id: int):
+    """Resets the timer so the background loop moves the panel immediately."""
+    if not PANEL_PERSIST_ON_RESPONSE:
+        return
+
+    for panel_name, panel_cfg in PANELS.items():
+        if str(channel_id) in [str(c) for c in (panel_cfg.get("channels") or [])]:
+            key = f"{channel_id}:{panel_name}"
+            PANEL_PERSIST_LAST[key] = 0  # Set to 0 so the 5-second loop picks it up NOW
+
+async def _delayed_persist(channel_id: int, delay: float):
+    """Waits for X seconds before triggering a persist (fixes n8n async race conditions)."""
+    await asyncio.sleep(delay)
+    trigger_immediate_persist(channel_id)
+
 
 async def process_panel_action(interaction: discord.Interaction, panel_name: str, command: str, args: list, modal_data: dict = None):
     """Shared execution logic for Buttons, Selects, and Modals."""
@@ -897,48 +1022,84 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
     if modal_data:
         payload["modal_inputs"] = modal_data
 
-    # 1. Archive immediately
+    msg = interaction.message
+    current_embed = None
+    current_content = None
+    archived_view = None
+
+    # 1. Archive immediately & Set Pending State (⏳)
     try:
-        msg = interaction.message
         if msg:
-            content, embed = _build_panel_message(panel_name, PANELS.get(panel_name, {}))
+            panel_cfg = PANELS.get(panel_name, {})
+            content, embed = _build_panel_message(panel_name, panel_cfg)
             
-            # Only update the text if STATUS_LINE is true
+            # Fallback: If dynamic panel config was lost, preserve original msg text
+            if not panel_cfg and msg.content:
+                content = msg.content
+                # Strip out ANY previous status lines (with or without emojis/newlines)
+                for marker in [
+                    f"\n{PANEL_STATUS_EMOJI_SUCCESS} Last: `", f"\n{PANEL_STATUS_EMOJI_FAIL} Last: `", f"\n{PANEL_STATUS_EMOJI_PENDING} Last: `", "\nLast: `",
+                    f"{PANEL_STATUS_EMOJI_SUCCESS} Last: `", f"{PANEL_STATUS_EMOJI_FAIL} Last: `", f"{PANEL_STATUS_EMOJI_PENDING} Last: `", "Last: `"
+                ]:
+                    if marker in content:
+                        content = content.split(marker)[0].strip()
+                        break
+                        
+                embed = msg.embeds[0] if msg.embeds else None
+            
             if PANEL_STATUS_LINE:
                 try:
                     ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p")
                 except Exception:
                     ts = datetime.now().strftime("%I:%M %p").lstrip("0")
-                user = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "Someone")
+                
+                user_display = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "Someone")
                 last_cmd = f"{command} {' '.join(args)}".strip()
-                content = f"{content}\nLast: `{last_cmd}` • {user} • {ts}"
+                safe_content = content if content else ""
+                
+                # Check if we should render the emoji in the status line text
+                emoji_prefix = f"{PANEL_STATUS_EMOJI_PENDING} " if PANEL_STATUS_EMOJI_TITLE else ""
+                content = f"{safe_content}\n{emoji_prefix}Last: `{last_cmd}` • {user_display} • {ts}".strip()
+
+                if len(content) > 2000:
+                    content = content[:1997] + "..."
+
+            # Add the PENDING emoji to the Embed Title
+            if embed and PANEL_STATUS_EMOJI_IN_EMBED:
+                embed.title = f"{embed.title or ''} {PANEL_STATUS_EMOJI_PENDING}".strip()
+                
+            current_embed = embed
+            current_content = content
 
             archived_view = DashPanel(
                 panel_name,
-                PANELS.get(panel_name, {}) or {},
+                panel_cfg,
                 disabled=PANEL_ARCHIVE_DISABLE_BUTTONS
             )
             await msg.edit(content=content, embed=embed, view=archived_view)
     except Exception as e:
         log.warning(f"⚠️ Failed to edit/archive panel message (Missing permissions?): {e}")
 
-    # 2. Spawn the new one immediately
-    if PANEL_SPAWN_NEW_ON_CLICK and interaction.channel:
+    # 2. Spawn the new one immediately (Skip if dynamic panel config is missing from a restart)
+    if PANEL_SPAWN_NEW_ON_CLICK and interaction.channel and PANELS.get(panel_name):
         try:
             await _post_panel_to_channel(
                 interaction.channel,
                 panel_name,
-                PANELS.get(panel_name, {}) or {},
+                PANELS.get(panel_name, {}),
                 force_new=True,
             )
         except Exception as e:
             log.error(f"⚠️ Failed to spawn new panel '{panel_name}' after button click: {e}", exc_info=True)
 
     # 3. Webhook call
+    is_success = False
     try:
         _dbg("Webhook button call start cmd=%s", command)
         data = await post_to_webhook_async(command, payload)
         _dbg("Webhook button call end cmd=%s", command)
+
+        is_success = data.get("ok", True) if isinstance(data, dict) else True
 
         reply = (data or {}).get("reply") or {}
         if not isinstance(reply, dict):
@@ -947,16 +1108,51 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
         suppress = bool(reply.get("suppress") or reply.get("supress"))
         reply_content = (reply.get("content") or "").strip()
 
-        if suppress or not reply_content:
-            return
-
-        await interaction.followup.send(content=reply_content[:2000], ephemeral=False)
+        # Only send a followup message if it's NOT suppressed and there is content
+        if not suppress and reply_content:
+            await interaction.followup.send(content=reply_content[:2000], ephemeral=False)
+        
+        # ALWAYS trigger the panel persist, even if the n8n response was empty/suppressed!
+        delay = float(cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY))
+        if delay > 0:
+            bot.loop.create_task(_delayed_persist(interaction.channel.id, delay))
+        else:
+            trigger_immediate_persist(interaction.channel.id)
 
     except Exception as e:
         log.error(f"⚠️ Exception triggering button command '{command}': {e}", exc_info=True)
         await interaction.followup.send(f"⚠️ Trigger failed: {type(e).__name__}: {e}", ephemeral=True)
+        is_success = False
+        
+    finally:
+        # 4. Update the archived message with final status (✅ or ❌)
+        if msg:
+            try:
+                status_emoji = PANEL_STATUS_EMOJI_SUCCESS if is_success else PANEL_STATUS_EMOJI_FAIL
+                kwargs = {}
 
-
+                # Swap the Embed Title Emoji
+                if current_embed and PANEL_STATUS_EMOJI_IN_EMBED:
+                    if current_embed.title and current_embed.title.endswith(f" {PANEL_STATUS_EMOJI_PENDING}"):
+                        current_embed.title = current_embed.title[:-len(PANEL_STATUS_EMOJI_PENDING)-1]
+                    current_embed.title = f"{current_embed.title or ''} {status_emoji}".strip()
+                    kwargs["embed"] = current_embed
+                    
+                # Swap the Status Line Emoji (fixed matching logic!)
+                if current_content and PANEL_STATUS_LINE and PANEL_STATUS_EMOJI_TITLE:
+                    # Target it exactly as generated, ignoring whether Discord stripped newlines at the start
+                    target = f"{PANEL_STATUS_EMOJI_PENDING} Last:"
+                    if target in current_content:
+                        current_content = current_content.replace(target, f"{status_emoji} Last:")
+                        kwargs["content"] = current_content
+                    
+                if kwargs:
+                    if archived_view:
+                        kwargs["view"] = archived_view
+                    await msg.edit(**kwargs)
+            except Exception as e:
+                log.warning(f"⚠️ Failed to update panel with final success/fail status: {e}")
+                              
 class DashModal(discord.ui.Modal):
     def __init__(self, panel_name: str, command: str, args: list, modal_cfg: dict):
         super().__init__(title=modal_cfg.get("title", "Input Required")[:45])
@@ -1054,6 +1250,7 @@ class DashSelect(discord.ui.Select):
         if not self.values or not interaction.channel: 
             return
         
+
         parts = self.values[0].split("::")
         command = parts[1]
         args = parts[2].split("|") if parts[2] else []
@@ -1121,6 +1318,226 @@ async def post_panels():
                 )
             except Exception as e:
                 log.error(f"⚠️ Failed to post panel '{panel_name}' to {channel_id}: {e}")
+
+# ----------------------------
+# DYNAMIC UI API (INBOUND)
+# ----------------------------
+def _json_reply(data: dict, status: int = 200) -> web.Response:
+    """Helper to return properly formatted JSON strings with trailing newlines for cURL."""
+    return web.Response(
+        text=json.dumps(data) + "\n",
+        status=status,
+        content_type="application/json"
+    )
+
+def _is_api_protected(cfg: dict) -> bool:
+    """Checks if a command or panel has the api_protected flag set to true."""
+    if not isinstance(cfg, dict):
+        return False
+    val = cfg.get("api_protected", False)
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes")
+    return bool(val)
+
+def _is_api_writable(cfg: dict, is_static: bool) -> bool:
+    """Checks if an item is allowed to be overwritten/refreshed by the API."""
+    if _is_api_protected(cfg):
+        return False  # Protected items are NEVER writable
+        
+    # Per-item override check in the JSON config
+    if "api_writable" in cfg:
+        val = cfg["api_writable"]
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes")
+        return bool(val)
+        
+    # Fallbacks: dynamic items are always writable. Static items rely on the global env flag.
+    return API_ALLOW_STATIC_OVERWRITE if is_static else True
+
+def _filter_protected(inventory: dict) -> dict:
+    """Removes any protected items from API dumps."""
+    return {k: v for k, v in inventory.items() if not _is_api_protected(v)}
+
+async def api_dynamic_handler(request: web.Request) -> web.Response:
+    """
+    Advanced Dynamic Routing Engine API.
+    Expects JSON:
+    {
+       "type": "panel" | "command",
+       "action": "upsert" | "delete" | "refresh" | "get",
+       "id": "my_element_id",       # Optional for "get" (omitting returns all)
+       "config": { ... optional update data ... }
+    }
+    """
+    client_ip = request.remote
+    user_agent = request.headers.get("User-Agent", "Unknown")
+    
+    log.info(f"🌐 [API] Connection attempt from IP: {client_ip} | Agent: {user_agent}")
+
+    auth_header = request.headers.get("Authorization") or request.headers.get("X-DashCord-Token")
+    if DASHCORD_SHARED_SECRET and auth_header != DASHCORD_SHARED_SECRET:
+        log.warning(f"🚫 [API] UNAUTHORIZED access attempt from IP: {client_ip}")
+        return _json_reply({"error": "Unauthorized"}, status=401)
+    
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Payload must be a JSON object")
+    except Exception as e:
+        log.error(f"⚠️ [API] Invalid JSON from IP: {client_ip} - {e}")
+        return _json_reply({"error": f"Invalid JSON: {e}"}, status=400)
+        
+    req_type = payload.get("type", "panel")
+    action = payload.get("action", "upsert")
+    item_id = payload.get("id")
+    config = payload.get("config", {})
+    
+    # Backwards compatibility check for old /api/send_panel behavior
+    if not item_id and req_type == "panel" and action != "get":
+        item_id = payload.get("panel_name", f"Dynamic_{uuid.uuid4().hex[:8]}")
+        config = payload.get("config", payload) # move flat config under 'config'
+        if "channel_id" in payload:
+            config["channels"] = [payload["channel_id"]]
+
+    # If action is 'get' and no ID is provided, default to 'all' to list inventory
+    if not item_id and action == "get":
+        item_id = "all"
+
+    if not item_id:
+        log.warning(f"⚠️ [API] Request from {client_ip} missing 'id' field.")
+        return _json_reply({"error": "Missing 'id' in payload"}, status=400)
+        
+    # Super detailed logging
+    log.info(f"⚙️ [API] Processing '{action}' for {req_type} '{item_id}' from IP: {client_ip}")
+    if config:
+        log.info(f"📦 [API] Payload config provided:\n{json.dumps(config, indent=2)}")
+        
+    # --- GET ACTION (READ) ---
+    if action == "get":
+        if req_type == "command":
+            if item_id == "all":
+                log.info(f"🔍 [API] Listing ALL accessible commands successfully for IP: {client_ip}")
+                return _json_reply({"status": "success", "commands": _filter_protected(COMMANDS)})
+            
+            cmd_cfg = COMMANDS.get(item_id)
+            if not cmd_cfg or _is_api_protected(cmd_cfg):
+                log.warning(f"⚠️ [API] Command '{item_id}' not found or protected (IP: {client_ip})")
+                return _json_reply({"error": f"Command '{item_id}' not found"}, status=404)
+            
+            log.info(f"🔍 [API] GET command '{item_id}' successfully retrieved by IP: {client_ip}")
+            return _json_reply({"status": "success", "id": item_id, "config": cmd_cfg})
+            
+        elif req_type == "panel":
+            if item_id == "all":
+                log.info(f"🔍 [API] Listing ALL accessible panels successfully for IP: {client_ip}")
+                return _json_reply({"status": "success", "panels": _filter_protected(PANELS)})
+                
+            panel_cfg = PANELS.get(item_id)
+            if not panel_cfg or _is_api_protected(panel_cfg):
+                log.warning(f"⚠️ [API] Panel '{item_id}' not found or protected (IP: {client_ip})")
+                return _json_reply({"error": f"Panel '{item_id}' not found"}, status=404)
+                
+            log.info(f"🔍 [API] GET panel '{item_id}' successfully retrieved by IP: {client_ip}")
+            return _json_reply({"status": "success", "id": item_id, "config": panel_cfg})
+            
+        return _json_reply({"error": f"Invalid type for get: {req_type}"}, status=400)
+
+    # --- COMMANDS (WRITE/DELETE) ---
+    if req_type == "command":
+        is_static = item_id in STATIC_COMMANDS
+        existing_cmd = COMMANDS.get(item_id)
+
+        if existing_cmd:
+            if _is_api_protected(existing_cmd):
+                log.warning(f"🛡️ [API] Security block: IP {client_ip} attempted to modify protected command '{item_id}'")
+                return _json_reply({"error": f"Command '{item_id}' is protected and cannot be modified via API."}, status=403)
+            
+            if not _is_api_writable(existing_cmd, is_static):
+                log.warning(f"🛡️ [API] Security block: IP {client_ip} attempted to modify STATIC command '{item_id}' without permission")
+                return _json_reply({"error": f"Command '{item_id}' is a static route and lacks 'api_writable: true'."}, status=403)
+
+        if action in ("upsert", "refresh"):
+            if config:
+                existing = _clone_payload(DYNAMIC_COMMANDS.get(item_id, COMMANDS.get(item_id, {})))
+                new_config = _deep_update(existing, config)
+
+                DYNAMIC_COMMANDS[item_id] = new_config
+                COMMANDS[item_id] = new_config
+                _save_dynamic_routes()
+            
+            log.info(f"✅ [API] Command '{item_id}' {action.upper()}ED successfully by {client_ip}")
+            return _json_reply({"status": "success", "message": f"Command '{item_id}' updated"})
+            
+        elif action == "delete":
+            DYNAMIC_COMMANDS.pop(item_id, None)
+            COMMANDS.pop(item_id, None)
+            _save_dynamic_routes()
+            
+            log.info(f"🗑️ [API] Command '{item_id}' DELETED successfully by {client_ip}")
+            return _json_reply({"status": "success", "message": f"Command '{item_id}' deleted"})
+            
+        return _json_reply({"error": f"Invalid action for command: {action}"}, status=400)
+            
+    # --- PANELS (WRITE/DELETE) ---
+    elif req_type == "panel":
+        is_static = item_id in STATIC_PANELS
+        existing_panel = PANELS.get(item_id)
+
+        if existing_panel:
+            if _is_api_protected(existing_panel):
+                log.warning(f"🛡️ [API] Security block: IP {client_ip} attempted to modify protected panel '{item_id}'")
+                return _json_reply({"error": f"Panel '{item_id}' is protected and cannot be modified via API."}, status=403)
+
+            if not _is_api_writable(existing_panel, is_static):
+                log.warning(f"🛡️ [API] Security block: IP {client_ip} attempted to modify STATIC panel '{item_id}' without permission")
+                return _json_reply({"error": f"Panel '{item_id}' is a static route and lacks 'api_writable: true'."}, status=403)
+
+        if action == "delete":
+            DYNAMIC_PANELS.pop(item_id, None)
+            panel_cfg = PANELS.pop(item_id, None)
+            _save_dynamic_routes()
+            
+            # Try to delete from Discord channels
+            if panel_cfg:
+                for cid in panel_cfg.get("channels", []):
+                    try:
+                        channel = bot.get_channel(int(cid)) or await bot.fetch_channel(int(cid))
+                        await _delete_existing_panel_message(channel, item_id)
+                    except Exception:
+                        pass
+                        
+            log.info(f"🗑️ [API] Panel '{item_id}' DELETED successfully by {client_ip}")
+            return _json_reply({"status": "success", "message": f"Panel '{item_id}' deleted"})
+            
+        elif action in ("upsert", "refresh"):
+            if config:
+                existing = _clone_payload(DYNAMIC_PANELS.get(item_id, PANELS.get(item_id, {})))
+                new_config = _deep_update(existing, config)
+
+                DYNAMIC_PANELS[item_id] = new_config
+                PANELS[item_id] = new_config
+                _save_dynamic_routes()
+                
+            panel_cfg = PANELS.get(item_id)
+            if not panel_cfg:
+                log.warning(f"⚠️ [API] Attempt to refresh non-existent panel '{item_id}' by {client_ip}")
+                return _json_reply({"error": f"Panel '{item_id}' not found"}, status=404)
+                
+            results = []
+            for cid in panel_cfg.get("channels", []):
+                try:
+                    channel = bot.get_channel(int(cid)) or await bot.fetch_channel(int(cid))
+                    await _post_panel_to_channel(channel, item_id, panel_cfg, force_new=False)
+                    msg_id = _get_panel_msg_id(int(cid), item_id)
+                    results.append({"channel_id": cid, "message_id": str(msg_id) if msg_id else None})
+                except Exception as e:
+                    results.append({"channel_id": cid, "error": str(e)})
+                    
+            log.info(f"✅ [API] Panel '{item_id}' {action.upper()}ED successfully by {client_ip}")
+            return _json_reply({"status": "success", "message": f"Panel '{item_id}' {action}ed", "results": results})
+            
+    return _json_reply({"error": f"Invalid type: {req_type}"}, status=400)
+
 
 # ----------------------------
 # EVENTS
@@ -1294,6 +1711,13 @@ async def on_message(message: discord.Message):
             await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
             
         await send_reply(message.channel, data)
+        
+        delay = float(cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY))
+        if delay > 0:
+            bot.loop.create_task(_delayed_persist(message.channel.id, delay))
+        else:
+            trigger_immediate_persist(message.channel.id)
+            
     except Exception as e:
         log.error(f"⚠️ Exception triggering command '{command}': {e}", exc_info=True)
         await _remove_reaction_safe(message, COMMAND_REACTION_PENDING)
@@ -1341,6 +1765,26 @@ async def panel_persist_loop():
                 log.error(f"⚠️ Error persisting panel '{panel_name}' in channel {cid}: {e}", exc_info=True)
 
             PANEL_PERSIST_LAST[key] = now_ts
+
+# Attach the API server to the bot's background loop natively
+async def _setup_hook():
+    if not API_ENABLED:
+        log.info("🛡️ API Server is disabled by API_ENABLED flag. Skipping boot.")
+        return
+
+    app = web.Application()
+    app.router.add_post('/api/dynamic', api_dynamic_handler)
+    app.router.add_post('/api/send_panel', api_dynamic_handler) 
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', API_PORT)
+    await site.start()
+    log.info(f"🌐 Dynamic UI API listening on port {API_PORT}")
+
+
+# Bind it to discord.py's native hook
+bot.setup_hook = _setup_hook
 
 # ----------------------------
 # MAIN

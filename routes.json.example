@@ -3,6 +3,8 @@
     "ping": {
       "endpoint": "https://hook.us1.make.com/your-webhook-id",
       "method": "POST",
+      "api_writable": true,
+      "panel_persist_delay": 1.5,
       "allowed_users": [],
       "allowed_channels": []
     },
@@ -25,6 +27,7 @@
     "weather": {
       "endpoint": "https://your-api.com/weather",
       "method": "GET",
+      "api_protected": true,
       "allowed_channels": [112233445566778899]
     },
     "advanced-ai": {
@@ -63,6 +66,7 @@
   "panels": {
     "Server_Controls": {
       "channels": ["123456789012345678", "876543210987654321"],
+      "api_writable": true,
       "persist": {
         "enabled": true,
         "interval_seconds": 120,
@@ -106,6 +110,9 @@
     },
     "Home_Automation": {
       "channels": ["112233445566778899"],
+      "content": "👋 **Welcome to your Smart Home Hub!** Use the menus below to control your environment.",
+      "show_title": false,
+      "api_protected": true,
       "embed": {
         "title": "🏠 Smart Home Hub",
         "color": "#3498db"
