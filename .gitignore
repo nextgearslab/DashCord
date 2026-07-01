@@ -16,6 +16,7 @@ push_to_webserver.sh
 # Data and configurations 
 config/
 routes.json
+test.txt
 
 # Logs
 *.log

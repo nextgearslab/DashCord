@@ -79,7 +79,7 @@ chmod +x start.sh
 > Because this bot reads chat commands (`!weather`), you **must** enable the **Message Content Intent**.
 > Go to the [Discord Developer Portal](https://discord.com/developers/applications) -> Your Bot -> **Bot** tab -> Scroll down to **Privileged Gateway Intents** -> Turn ON **Message Content Intent**.
 
-### 🌐 Running on Alternative Ports (Local Overrides)
+### 🐳 Docker Overrides (Custom API Ports & Local IPs)
 If port `8080` is already in use on your host machine, or you need to mount local development variables without modifying tracked Git files, you can use a `docker-compose.override.yml` file. 
 
 Create a file named `docker-compose.override.yml` in the root directory:
@@ -92,9 +92,12 @@ services:
     volumes:
       - ./secrets.env:/app/secrets.env
     extra_hosts:
-      - "n8n.local:192.168.1.102" # Map internal local LAN domains
+      - "n8n.lan:192.168.1.102" # Map internal local LAN domains
 ```
-      
+
+> **💡 Missing Slash Commands?**
+> Discord aggressively caches Slash Commands on desktop and mobile clients. If you start the bot and don't immediately see your `/commands` in Discord, completely restart your Discord app (CTRL+R on desktop) to clear the cache.
+
 ---
 
 ## ⚙️ Configuration File (`routes.json`)
@@ -130,6 +133,24 @@ Commands map a typed Discord message to a webhook URL.
 
 *   **Supported Methods:** Both `"POST"` and `"GET"` are supported.
 *   **GET Requests:** If you choose `GET`, the entire JSON payload is stringified and passed as a URL query parameter (e.g., `?payload={"source":"discord", ...}`).
+
+### ⌨️ Automatic Slash Commands
+
+Whenever you add a new command to `routes.json`, DashCord will automatically register it as a native Discord Slash Command (e.g., `/ping`). 
+
+Users can trigger it by typing the traditional prefix (`!ping restart`) OR by using the Discord slash menu (`/ping arguments: restart`).
+- **Permissions:** The bot respects your `allowed_users` and `allowed_channels` rules even when triggered via Slash Commands.
+- **Descriptions:** You can add a `"description"` key to your command config to customize what shows up in the Discord Slash Command menu!
+
+```json
+"commands": {
+  "deploy": {
+    "endpoint": "https://your-automation-tool.com/webhook/deploy",
+    "description": "Trigger a server deployment pipeline",
+    "allowed_users": ["1234567890"]
+  }
+}
+```
 
 ### 2. Defining File Uploads
 
