@@ -11,7 +11,8 @@ import re
 from typing import Any
 from datetime import timezone
 
-import requests
+import aiohttp
+import time
 from dotenv import load_dotenv
 
 from aiohttp import web
@@ -19,6 +20,8 @@ from aiohttp import web
 import discord
 from discord.ext import commands
 from discord.ext import tasks
+from discord import app_commands
+
 
 import logging
 BOT_STARTED_AT_UTC = datetime.now(timezone.utc)  # module load time (safe default)
@@ -113,7 +116,7 @@ API_PORT = int(os.getenv("API_PORT", "8080"))
 API_ALLOW_STATIC_OVERWRITE = get_env_bool("API_ALLOW_STATIC_OVERWRITE", "false")
 
 PLACEHOLDER_RE = re.compile(r"\{\{([a-zA-Z0-9_.]+)\}\}")
-
+AIOHTTP_SESSION: aiohttp.ClientSession | None = None
 
 # ----------------------------
 # LOAD ROUTES.JSON & DYNAMIC ROUTES
@@ -500,6 +503,13 @@ async def _persist_panel_once(panel_name: str, channel: discord.abc.Messageable,
     active_id_str = _get_active_panel_msg_id(channel.id, panel_name)
     active_id = int(active_id_str) if active_id_str and active_id_str.isdigit() else None
 
+    # SAFETY NET: If we don't know the active panel, try to find it first (prevents blind duplication)
+    if active_id is None:
+        existing = await _find_existing_panel_message(channel, panel_name)
+        if existing:
+            active_id = existing.id
+            _set_active_panel_msg_id(channel.id, panel_name, active_id)
+
     # If our active panel is already last, do nothing
     if active_id and last_id == active_id:
         return
@@ -509,7 +519,7 @@ async def _persist_panel_once(panel_name: str, channel: discord.abc.Messageable,
     # Post new panel at bottom
     await _post_panel_to_channel(channel, panel_name, panel_cfg, force_new=True)
 
-    # Cleanup previous active panel so we don’t accumulate junk
+    # Cleanup previous active panel so we don't accumulate junk
     enabled, interval, cleanup_old = _panel_persist_cfg(panel_cfg)
     if cleanup_old and active_id:
         try:
@@ -595,7 +605,7 @@ async def _find_existing_panel_message(channel: discord.abc.Messageable, panel_n
             if msg.author and msg.author.id == bot.user.id:
                 # check if it is the panel by seeing if the name is in the content
                 if isinstance(msg.content, str) and f"({panel_name})" in msg.content:
-                    log.info(f"🔍 Found existing panel '{panel_name}' in channel {channel.id}. Attaching to it.")
+                    log.info(f"🔍 Found existing panel '{panel_name}' in channel {channel.id} (via text match). Attaching to it.")
                     _set_panel_msg_id(channel.id, panel_name, msg.id)
                     return msg
                 
@@ -605,7 +615,7 @@ async def _find_existing_panel_message(channel: discord.abc.Messageable, panel_n
                         cid = getattr(child, "custom_id", "") or ""
                         # If a button or select matches this panel's internal ID
                         if cid.startswith(f"dashcord:btn:{panel_name}:") or cid.startswith(f"dashcord:sel:{panel_name}:"):
-                            log.info(f"🔍 Found existing panel '{panel_name}' via component ID.")
+                            log.info(f"🔍 Found existing panel '{panel_name}' in channel {channel.id} (via component ID). Attaching to it.")
                             _set_panel_msg_id(channel.id, panel_name, msg.id)
                             return msg
     except Exception as e:
@@ -735,15 +745,11 @@ def _resolve_method(command: str) -> str:
     return m
 
 async def post_to_webhook_async(command: str, payload: dict) -> dict:
-    # run blocking requests.* off the event loop
-    return await asyncio.to_thread(post_to_webhook, command, payload)
-
-def post_to_webhook(command: str, payload: dict) -> dict:
     cfg = COMMANDS.get(command) or {}
     endpoint = resolve_endpoint(command)
     method = _resolve_method(command)
 
-    body_template = cfg.get("body_template")  # optional
+    body_template = cfg.get("body_template")
     out_json = payload
     if body_template is not None:
         out_json = _render_body_template(body_template, payload)
@@ -758,28 +764,23 @@ def post_to_webhook(command: str, payload: dict) -> dict:
         for h_key, h_val in custom_headers.items():
             headers[h_key] = str(h_val)
 
-    def parse_response(r: requests.Response) -> dict:
-        _dbg("WEBHOOK POST cmd=%s status=%s", command, r.status_code)
+    async def parse_response(status: int, text: str, resp_headers: dict) -> dict:
+        _dbg("WEBHOOK POST cmd=%s status=%s", command, status)
 
-        text = r.text or ""
-
-        # ---- DEBUG RAW RESPONSE ----
         if DEBUG_WEBHOOK:
-            safe_headers = dict(r.headers)
             preview = text[:800].replace("\n", "\\n")
             log.info(
                 "\n================ WEBHOOK RESPONSE ================\n"
                 f"command: {command}\n"
                 f"endpoint: {endpoint}\n"
-                f"status: {r.status_code}\n"
-                f"content-type: {safe_headers.get('Content-Type')}\n"
+                f"status: {status}\n"
+                f"content-type: {resp_headers.get('Content-Type')}\n"
                 f"text_preview: {preview}\n"
                 "=================================================="
             )
 
-        # ---- TRY JSON ----
         try:
-            data = r.json()
+            data = json.loads(text)
         except Exception:
             data = None
 
@@ -793,17 +794,16 @@ def post_to_webhook(command: str, payload: dict) -> dict:
 
         # If still not a dict, fall back to raw text
         if not isinstance(data, dict):
-            data = {"ok": (200 <= r.status_code < 300), "reply": {"content": text}}
-
+            data = {"ok": (200 <= status < 300), "reply": {"content": text}}
 
         # Normalize error responses
-        if not (200 <= r.status_code < 300):
-            log.warning(f"❌ Webhook Error [{command}]: HTTP {r.status_code} - {text[:200]}")
+        if not (200 <= status < 300):
+            log.warning(f"❌ Webhook Error [{command}]: HTTP {status} - {text[:200]}")
             data["ok"] = False
             data.setdefault("reply", {})
             if not isinstance(data["reply"], dict):
                 data["reply"] = {"content": str(data["reply"])}
-            data["reply"].setdefault("content", f"Webhook HTTP {r.status_code}: {text[:800]}")
+            data["reply"].setdefault("content", f"Webhook HTTP {status}: {text[:800]}")
 
         # Normalize reply shape
         data.setdefault("reply", {})
@@ -837,51 +837,48 @@ def post_to_webhook(command: str, payload: dict) -> dict:
 
         return data
 
-    t0 = datetime.now().timestamp()
+    t0 = time.monotonic()
     _dbg("WEBHOOK request cmd=%s method=%s endpoint=%s timeout=%s verify_tls=%s",
-        command, method, endpoint, HTTP_TIMEOUT_SECONDS, VERIFY_TLS)
+         command, method, endpoint, HTTP_TIMEOUT_SECONDS, VERIFY_TLS)
 
-    # --- primary request ---
-    if method == "POST":
-        r = requests.post(
-            endpoint,
-            headers=headers,
-            json=out_json,
-            timeout=HTTP_TIMEOUT_SECONDS,
-            verify=VERIFY_TLS,
-        )
+    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+    
+    global AIOHTTP_SESSION
+    session = AIOHTTP_SESSION
+    close_session = False
+    
+    # Fallback if somehow called before setup_hook initializes the global session
+    if session is None:
+        session = aiohttp.ClientSession(timeout=timeout)
+        close_session = True
 
-        _dbg("WEBHOOK response cmd=%s status=%s elapsed=%.2fs",
-        command, r.status_code, datetime.now().timestamp() - t0)
+    try:
+        if method == "POST":
+            async with session.post(endpoint, headers=headers, json=out_json, ssl=VERIFY_TLS, timeout=timeout) as r:
+                text = await r.text()
+                _dbg("WEBHOOK response cmd=%s status=%s elapsed=%.2fs", command, r.status, time.monotonic() - t0)
 
-        if r.status_code == 404 and "not registered for POST requests" in (r.text or ""):
-            r2 = requests.get(
-                endpoint,
-                headers=headers,
-                params={"payload": json.dumps(out_json, separators=(",", ":"))},
-                timeout=HTTP_TIMEOUT_SECONDS,
-                verify=VERIFY_TLS,
-            )
-            return parse_response(r2)
+                # missing POST route fallback to GET
+                if r.status == 404 and "not registered for POST requests" in text:
+                    async with session.get(endpoint, headers=headers, params={"payload": json.dumps(out_json, separators=(",", ":"))}, ssl=VERIFY_TLS, timeout=timeout) as r2:
+                        text2 = await r2.text()
+                        return await parse_response(r2.status, text2, dict(r2.headers))
+                
+                return await parse_response(r.status, text, dict(r.headers))
 
-        data = parse_response(r)
-        _dbg("WEBHOOK parsed cmd=%s ok=%s reply_len=%s", command, data.get("ok"), len(((data.get("reply") or {}).get("content") or "")))
-        return data
-
-
-    # method == GET
-    r = requests.get(
-        endpoint,
-        headers=headers,
-        params={"payload": json.dumps(out_json, separators=(",", ":"))},
-        timeout=HTTP_TIMEOUT_SECONDS,
-        verify=VERIFY_TLS,
-    )
-    data = parse_response(r)
-    _dbg("WEBHOOK parsed cmd=%s ok=%s reply_len=%s", command, data.get("ok"), len(((data.get("reply") or {}).get("content") or "")))
-    return data
-
-
+        else: # GET method
+            async with session.get(endpoint, headers=headers, params={"payload": json.dumps(out_json, separators=(",", ":"))}, ssl=VERIFY_TLS, timeout=timeout) as r:
+                text = await r.text()
+                _dbg("WEBHOOK response cmd=%s status=%s elapsed=%.2fs", command, r.status, time.monotonic() - t0)
+                return await parse_response(r.status, text, dict(r.headers))
+                
+    except Exception as e:
+        log.error(f"⚠️ Webhook Exception cmd={command}: {e}")
+        raise
+    finally:
+        if close_session:
+            await session.close()
+            
 async def send_reply(channel: discord.abc.Messageable, data: dict) -> None:
     reply = (data or {}).get("reply") or {}
     if not isinstance(reply, dict):
@@ -1115,7 +1112,7 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
         # ALWAYS trigger the panel persist, even if the n8n response was empty/suppressed!
         delay = float(cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY))
         if delay > 0:
-            bot.loop.create_task(_delayed_persist(interaction.channel.id, delay))
+            asyncio.create_task(_delayed_persist(interaction.channel.id, delay))
         else:
             trigger_immediate_persist(interaction.channel.id)
 
@@ -1152,7 +1149,7 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
                     await msg.edit(**kwargs)
             except Exception as e:
                 log.warning(f"⚠️ Failed to update panel with final success/fail status: {e}")
-                              
+
 class DashModal(discord.ui.Modal):
     def __init__(self, panel_name: str, command: str, args: list, modal_cfg: dict):
         super().__init__(title=modal_cfg.get("title", "Input Required")[:45])
@@ -1539,6 +1536,51 @@ async def api_dynamic_handler(request: web.Request) -> web.Response:
     return _json_reply({"error": f"Invalid type: {req_type}"}, status=400)
 
 
+def create_dynamic_slash_command(cmd_name: str, cmd_cfg: dict):
+    
+    # discord.py automatically turns `arguments: str = None` into an optional Slash Command input box!
+    async def slash_callback(interaction: discord.Interaction, arguments: str = None):
+        # 1. Check permissions
+        if not is_channel_allowed(cmd_name, interaction.channel_id):
+            await interaction.response.send_message("⛔ Not allowed in this channel.", ephemeral=True)
+            return
+        if not is_user_allowed(cmd_name, interaction.user.id):
+            await interaction.response.send_message("⛔ Not allowed for your user.", ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=False)
+        
+        # 2. Re-create the payload structure your webhooks expect
+        parsed_args = arguments.split() if arguments else []
+        raw_input = f"/{cmd_name} {arguments}".strip() if arguments else f"/{cmd_name}"
+        
+        payload = build_payload(
+            event_type="command",
+            command=cmd_name,
+            args=parsed_args,
+            raw=raw_input,
+            guild=interaction.guild,
+            channel=interaction.channel,
+            user=interaction.user,
+            interaction_id=str(interaction.id),
+        )
+        
+        # 3. Trigger the webhook
+        try:
+            data = await post_to_webhook_async(cmd_name, payload)
+            await send_reply(interaction.channel, data)
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Trigger failed: {e}", ephemeral=True)
+
+    # Wrap it up as an official Discord App Command
+    desc = cmd_cfg.get("description", f"Trigger the {cmd_name} webhook")[:100]
+    cmd = app_commands.Command(
+        name=cmd_name,
+        description=desc,
+        callback=slash_callback
+    )
+    
+    return cmd
 # ----------------------------
 # EVENTS
 # ----------------------------
@@ -1546,13 +1588,21 @@ async def api_dynamic_handler(request: web.Request) -> web.Response:
 async def on_ready():
     global BOT_STARTED_AT_UTC
     BOT_STARTED_AT_UTC = datetime.now(timezone.utc)
-    log.info(f"✅ DashCord online as {bot.user} (ID: {bot.user.id}) start_utc={BOT_STARTED_AT_UTC.isoformat()}")
+    log.info(f"✅ DashCord online as {bot.user}")
 
-    if PANEL_REPOST_ON_STARTUP:
-        await post_panels()
+    # Clear and rebuild the slash commands
+    bot.tree.clear_commands(guild=None)
 
-    if not panel_persist_loop.is_running():
-        panel_persist_loop.start()
+    for cmd_name, cmd_cfg in COMMANDS.items():
+        try:
+            slash_cmd = create_dynamic_slash_command(cmd_name, cmd_cfg)
+            bot.tree.add_command(slash_cmd)
+        except Exception as e:
+            log.error(f"⚠️ Failed to register slash command '{cmd_name}': {e}")
+
+    # Tell Discord's API to update the Slash Command menu globally
+    await bot.tree.sync()
+    log.info("Synced application commands successfully.")
 
 @bot.event
 async def on_disconnect():
@@ -1714,7 +1764,7 @@ async def on_message(message: discord.Message):
         
         delay = float(cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY))
         if delay > 0:
-            bot.loop.create_task(_delayed_persist(message.channel.id, delay))
+            asyncio.create_task(_delayed_persist(message.channel.id, delay))
         else:
             trigger_immediate_persist(message.channel.id)
             
@@ -1768,6 +1818,22 @@ async def panel_persist_loop():
 
 # Attach the API server to the bot's background loop natively
 async def _setup_hook():
+    global AIOHTTP_SESSION
+    AIOHTTP_SESSION = aiohttp.ClientSession()
+
+    async def init_state():
+        await bot.wait_until_ready()
+        
+        # 1. Fire the post_panels() function on startup if enabled
+        if PANEL_REPOST_ON_STARTUP:
+            await post_panels()
+            
+        # 2. Start the periodic persistence check loop ONLY AFTER panels are attached
+        if not panel_persist_loop.is_running():
+            panel_persist_loop.start()
+            
+    asyncio.create_task(init_state())
+
     if not API_ENABLED:
         log.info("🛡️ API Server is disabled by API_ENABLED flag. Skipping boot.")
         return
@@ -1781,7 +1847,6 @@ async def _setup_hook():
     site = web.TCPSite(runner, '0.0.0.0', API_PORT)
     await site.start()
     log.info(f"🌐 Dynamic UI API listening on port {API_PORT}")
-
 
 # Bind it to discord.py's native hook
 bot.setup_hook = _setup_hook
