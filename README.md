@@ -44,6 +44,7 @@ While platforms like n8n and Node-RED have native Discord nodes, they are often 
 - **🎛️ Sticky Dashboard Panels:** Generate persistent UI button panels in specific channels. The bot can automatically "persist" these panels, moving them to the bottom of the chat so they never get buried. Users can click buttons to trigger workflows without typing.
 - **📁 Intelligent File Fan-out:** Forward files directly to your webhooks. Can auto-parse JSON attachments, convert to Base64, and dynamically fan-out requests (upload 5 files, it triggers 5 separate webhook calls).
 - **🎭 Dynamic Body Templating:** Inject Discord metadata (like `{{discord.user_display}}` or `{{discord.channel_id}}`) directly into the JSON payload sent to your webhook, molding the data to fit your API perfectly.
+- **🪝 Dynamic Response Templating:** Connect buttons directly to 3rd-party APIs (OpenAI, GitHub, Local servers). DashCord can intercept raw JSON responses and dynamically map them into beautiful Discord Embeds without needing a middleman server to translate the data!
 - **🔒 Security Built-In:** Restrict specific commands to specific Discord channels or user IDs. Secures outbound requests with a custom `X-DashCord-Token` header.
 - **💬 Native Discord Replies:** Your webhook can respond with JSON containing plain text or rich Discord Embeds, and the bot will cleanly post it back to the channel.
 - **👁️ Visual Status Indicators:** Real-time emoji reactions (⏳, ✅, ❌) let users know exactly when a command is processing, succeeded, or failed without needing extra text replies.
@@ -140,6 +141,7 @@ Commands map a typed Discord message (or Slash Command) to a webhook URL. You ha
 *   `action_persist_delay`: Handles race conditions. If your automation tool sends multiple follow-up messages *after* replying to the button, this delay (in seconds) tells the bot to wait before jumping the panel to the bottom of the chat.
 *   `headers`: A dictionary of custom HTTP headers to send to your webhook (Overrides the global `X-DashCord-Token`).
 *   `body_template`: A custom JSON structure to map exactly what your webhook expects instead of the default DashCord schema.
+*   `response_template`: A custom JSON structure used to map a 3rd-party API's raw JSON response into a valid Discord reply (supports dot-notation parsing, embeds, and arrays).
 *   `api_protected`: If `true`, completely blocks the Dynamic API from viewing or editing this command.
 *   `api_writable`: If `true`, explicitly allows the Dynamic API to edit this command at runtime (if it's a static route).
 
@@ -611,6 +613,166 @@ DashCord contains defensive parsing routines to prevent errors when automation p
 *(If you do not want the bot to reply at all, return `{"reply": {"suppress": true}}` or just an empty 200 OK).*
 
 ---
+
+## 🪝 Response Templates (Mapping 3rd-Party APIs)
+
+By default, DashCord expects your automation tool to return a specific JSON structure (`{"reply": {"content": "..."}}`). 
+
+But if you connect a button directly to an external API (like GitHub, OpenAI, or a local server) that you don't control, it will return raw JSON. Instead of writing a custom middleware server, you can use a **`response_template`** directly in your command config to translate that raw data into Discord-ready messages.
+
+---
+
+### 💻 Step-by-Step Walkthrough: Mapping HTTPBin
+
+Here is exactly how to map a raw API response using a live test with `httpbin.org`.
+
+#### Step 1: Define the Base Command
+First, we create a basic command in `routes.json` that sends a custom payload to HTTPBin. 
+
+```json
+"commands": {
+  "ping": {
+    "endpoint": "https://httpbin.org/post",
+    "method": "POST",
+    "body_template": {
+      "params": {
+        "message": "PONG!",
+        "user": "{{discord.user_name}}"
+      }
+    }
+  }
+}
+```
+
+#### Step 2: Trigger the Command & Check Logs
+If you link this command to a button and click it, HTTPBin will echo your payload back. Because the API doesn't return DashCord's expected `{"reply": ...}` format, nothing will happen in Discord. 
+
+However, DashCord intercepts the raw API response and prints it to your console. This is the exact raw log you will see:
+
+```text
+================ WEBHOOK RESPONSE ================
+command: ping
+endpoint: https://httpbin.org/post
+status: 200
+content-type: application/json
+text_preview: {
+  "args": {}, 
+  "data": "{\"params\": {\"message\": \"PONG!\", \"user\": \"milkyway\"}}", 
+  "files": {}, 
+  "form": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Accept-Encoding": "gzip, deflate", 
+    "Content-Length": "55", 
+    "Content-Type": "application/json", 
+    "Host": "httpbin.org", 
+    "User-Agent": "Python/3.12 aiohttp/3.14.1", 
+    "X-Amzn-Trace-Id": "Root=1...", 
+    "X-Dashcord-Token": "..."
+  }, 
+  "json": {
+    "params": {
+      "message": "PONG!", 
+      "user": "milkyway"
+    }
+  }, 
+  "origin": "160.219.119.128", 
+  "url": "https://httpbin.org/post"
+}
+==================================================
+```
+
+#### Step 3: Trace your Data Path
+To display this data in Discord, look at the JSON keys inside the log above and trace their paths:
+1. **Origin IP:** Located at the root under `"origin"`. Path: `{{origin}}`
+2. **User-Agent:** Located inside the `headers` object. Path: `{{headers.User-Agent}}`
+3. **Echoed Message:** Located deep inside `json` -> `params` -> `message`. Path: `{{json.params.message}}`
+
+#### Step 4: Add the Response Template
+Now, we simply update our command in `routes.json` with a `response_template` using those exact paths to tell DashCord how to format the message:
+
+```json
+"commands": {
+  "ping": {
+    "endpoint": "https://httpbin.org/post",
+    "method": "POST",
+    "body_template": {
+      "params": {
+        "message": "PONG!",
+        "user": "{{discord.user_name}}"
+      }
+    },
+    "response_template": {
+      "reply": {
+        "content": "🎯 **API Ping Success!**\n\n**🌍 Origin IP:** `{{origin}}`\n**🤖 User-Agent:** `{{headers.User-Agent}}`\n**💬 Echoed Message:** `{{json.params.message}}`"
+      }
+    }
+  }
+}
+```
+
+#### Step 5: The Result in Discord
+When a user clicks your button now, DashCord automatically translates the raw JSON from the console log and posts this clean output to the channel:
+
+> 🎯 **API Ping Success!**
+> 
+> **🌍 Origin IP:** `160.219.119.128`
+> **🤖 User-Agent:** `Python/3.12 aiohttp/3.14.1`
+> **💬 Echoed Message:** `PONG!`
+
+### 💡 Advanced Mapping (Embeds, Arrays & Privacy)
+
+Because `response_template` is evaluated recursively against the entire JSON payload, you can use it to dynamically generate rich Discord Embeds, toggle ephemeral (private) states, or pull from arrays!
+
+#### 🎨 1. Dynamic Discord Embeds
+You can map 3rd-party API data directly into Discord Embed fields.
+If a server-monitoring API returns `{"hostname": "Prod-DB", "cpu": 98, "status": "Critical"}`, you can map it to a red embed:
+
+```json
+"response_template": {
+  "reply": {
+    "embeds": [
+      {
+        "title": "🖥️ {{hostname}} Status",
+        "description": "System status is currently: **{{status}}**",
+        "color": 16711680,
+        "fields": [
+          {
+            "name": "CPU Usage",
+            "value": "`{{cpu}}%`",
+            "inline": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+#### 📚 2. Accessing Arrays (Lists)
+If your API returns a list of items (e.g., `{"results": [{"name": "Task 1"}, {"name": "Task 2"}]}`), you can access specific indexes using numbers in your dot-notation:
+
+```json
+"response_template": {
+  "reply": {
+    "content": "✅ The latest task completed was: **{{results.0.name}}**"
+  }
+}
+```
+
+#### 🥷 3. Dynamic Privacy (Ephemeral Flags)
+You can even use the API's response to decide if the Discord message should be public or private. If your API returns `{"is_sensitive_data": true}`, you can map that directly to the `ephemeral` flag!
+
+```json
+"response_template": {
+  "reply": {
+    "content": "Here is the data: {{data}}",
+    "ephemeral": "{{is_sensitive_data}}"
+  }
+}
+```
+
+--- 
 
 ## 📡 Dynamic API (Programmatic Routing)
 
