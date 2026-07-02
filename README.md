@@ -47,7 +47,11 @@ While platforms like n8n and Node-RED have native Discord nodes, they are often 
 - **🔒 Security Built-In:** Restrict specific commands to specific Discord channels or user IDs. Secures outbound requests with a custom `X-DashCord-Token` header.
 - **💬 Native Discord Replies:** Your webhook can respond with JSON containing plain text or rich Discord Embeds, and the bot will cleanly post it back to the channel.
 - **👁️ Visual Status Indicators:** Real-time emoji reactions (⏳, ✅, ❌) let users know exactly when a command is processing, succeeded, or failed without needing extra text replies.
-
+- **⏱️ Live Ticking Animations:** Turn on elapsed-time animations and let users watch a live `(2.5s)` counter tick up in real-time while waiting for your heavy n8n/Make workflows to finish. 
+- **🥷 Stealth & Ephemeral Routing:** Configure specific commands to reply privately (so only the clicking user sees the result) and disable public bot reactions (`⏳`) for total chat cleanliness.
+- **🚧 API Maintenance Mode:** Disable UI panels on the fly via the API. Keep the panel visible in chat, but grey out all buttons and dropdowns while your backend is restarting.
+- **⚙️ Max Configuration:** Everything is overrideable. Set global defaults in your `.env`, but override emojis, delays, animations, and privacy settings down to the individual panel or command level.
+  
 ---
 
 ## 🚀 Quick Start (Docker)
@@ -106,28 +110,42 @@ All routing logic is driven by `routes.json`. It has two main sections: `command
 
 ### 1. Defining a Command
 
-Commands map a typed Discord message to a webhook URL.
+Commands map a typed Discord message (or Slash Command) to a webhook URL. You have ultimate control over how the command behaves visually and functionally.
 
 ```json
 "commands": {
-  "ping": {
-    "endpoint": "https://your-automation-tool.com/webhook/ping",
+  "deploy-server": {
+    "endpoint": "https://your-automation-tool.com/webhook/deploy",
     "method": "POST",
-    "panel_persist_delay": 1.5,
+    "timeout": 60,
+    "ephemeral_replies": true,
+    "reactions_enabled": false,
+    "action_persist_delay": 5.0,
     "allowed_users": ["1234567890"],
-    "allowed_channels":[]
+    "allowed_channels": []
   }
 }
 ```
-*Typing `!ping test` will send a POST request containing the arguments to that webhook. Because `allowed_users` has an ID, only that Discord user can trigger it.*
+*Typing `!deploy-server` will securely trigger your webhook. Because `ephemeral_replies` is true, the response will only be visible to the user who triggered it.*
 
-> **💡 Handling Race Conditions (`panel_persist_delay`)**
-> If your automation platform (like n8n) replies to a button click but *also* sends secondary follow-up messages a moment later, the bot might jump the panel to the bottom too fast, causing the panel to end up *above* your automation's follow-up messages. 
-> To fix this, you can add `"panel_persist_delay": 1.5` (seconds) to the **command** configuration. This tells the bot to wait before jumping the panel to the bottom, mitigating the race condition.
+**Master Command Configuration Options:**
+*   `endpoint`: **(Required)** The webhook URL to trigger.
+*   `method`: HTTP method to use (`"POST"` or `"GET"`). (Default: `"POST"`).
+*   `description`: The custom text description shown in Discord's native `/` Slash Command menu.
+*   `allowed_users`: Array of Discord User IDs permitted to use this command. Leave empty `[]` to allow anyone.
+*   `allowed_channels`: Array of Discord Channel IDs where this command can be used. Leave empty `[]` to allow anywhere.
+*   `timeout`: How many seconds DashCord will wait for your webhook to reply before throwing an error. Great for long-running workflows (Overrides the `.env` global timeout).
+*   `ephemeral_replies`: Set to `true` to make the bot's reply private (only the user who triggered it can see the response).
+*   `reactions_enabled`: Set to `false` to prevent the bot from adding the `⏳` and `✅` reactions to typed chat commands. Perfect for stealthy background triggers.
+*   `action_persist_delay`: Handles race conditions. If your automation tool sends multiple follow-up messages *after* replying to the button, this delay (in seconds) tells the bot to wait before jumping the panel to the bottom of the chat.
+*   `headers`: A dictionary of custom HTTP headers to send to your webhook (Overrides the global `X-DashCord-Token`).
+*   `body_template`: A custom JSON structure to map exactly what your webhook expects instead of the default DashCord schema.
+*   `api_protected`: If `true`, completely blocks the Dynamic API from viewing or editing this command.
+*   `api_writable`: If `true`, explicitly allows the Dynamic API to edit this command at runtime (if it's a static route).
 
 > **💡 Note on Case Sensitivity**
-> Commands are **case-insensitive for the end user** (they can type `!PING` or `!Ping`). However, you must define the command keys in `routes.json` in **all lowercase** (e.g., `"ping"`, not `"Ping"`).
->
+> Commands are **case-insensitive for the end user** (they can type `!DEPLOY` or `!deploy`). However, you must define the command keys in `routes.json` in **all lowercase** (e.g., `"deploy"`, not `"Deploy"`).
+
 > **❓ Smart Help**
 > If a user types a command that doesn't exist, DashCord will automatically reply with a list of commands that the user **actually has permission to use** in that specific channel.
 
@@ -152,6 +170,10 @@ Users can trigger it by typing the traditional prefix (`!ping restart`) OR by us
 }
 ```
 
+> **💡 Perfect Argument Parity**
+> When using a native Slash Command, you will see a single input field called `arguments`. 
+> If you type `restart force` into the Slash input, DashCord automatically splits it behind the scenes, passing `["restart", "force"]` inside the `args` array to your webhook. This guarantees your backend workflows can process typed commands (`!deploy restart force`) and Slash Commands (`/deploy arguments: restart force`) using the exact same parsing logic.
+
 ### 2. Defining File Uploads
 
 You can allow commands to accept attachments, or even fire automatically when a specific filetype is uploaded without a command at all.
@@ -169,6 +191,10 @@ You can allow commands to accept attachments, or even fire automatically when a 
   }
 }
 ```
+
+> **💡 Pro-Tip: Wildcard Extensions**
+> If you want a command to accept any file upload regardless of the file type, simply set `"extensions": []` or omit the `"extensions"` key entirely from the `attachment_rules` block.
+
 > **💡 The "Fan-out" Rule**
 > DashCord handles multiple file uploads intelligently. If a user uploads **5 files at once**, the bot will "fan-out" and trigger **5 separate webhook calls** (one for each file). This makes it much easier to build your n8n/Make workflows, as you only ever have to handle **one file at a time** in your automation logic!
 
@@ -176,6 +202,7 @@ You can allow commands to accept attachments, or even fire automatically when a 
 > You can control how the bot replies to uploads using the `attachment_reply` block.
 > *   `mode`: Set to `"errors"` (default) to only reply if something goes wrong, `"always"` to always confirm, or `"none"` for silence.
 > *   `success_template` / `error_template`: Use `{ok}`, `{bad}`, and `{total}` as variables to customize the message.
+> *   `require_json`: Set to `true` to force validation. DashCord natively parses standard JSON (objects/lists) as well as **Concatenated JSON / JSON Lines** (multiple raw JSON objects uploaded back-to-back, e.g., `{"id":1}{"id":2}`), validating them safely before hitting your webhook.
 
 ### 3. Designing Interactive UI Dashboards (Embeds, Buttons & Dropdowns)
 
@@ -216,43 +243,120 @@ Panels create persistent, interactive dashboards in your Discord channels. You c
 *   **Dynamic API Security:** Add `"api_protected": true` to completely block the API from viewing or modifying a panel, or `"api_writable": true` to allow it.
 *   **Emojis:** You can add `"emoji"` keys to both buttons and select options to make your dashboard visually intuitive.
 
-**Customizing Persistence per Panel:**
-If you want one panel to "jump" to the bottom of the chat every 60 seconds but another to stay put, add a `persist` block directly to the panel:
+#### 🎛️ Master Panel Configuration (Max Config)
+Every global setting in your `.env` can be overridden on a per-panel basis. This allows you to have a completely silent, static panel living right next to a fully animated, hyper-persistent dashboard.
+
+Here is the **Ultimate Panel Schema** showing every possible configuration key:
+
 ```json
-"Server_Controls": {
-  "channels": ["123456789"],
-  "persist": {
-    "enabled": true,
-    "interval_seconds": 60,
-    "cleanup_old_active": true
-  },
-  "buttons": [...]
+"panels": {
+  "Ultimate_Dashboard": {
+    "channels": ["112233445566778899"],
+    "disabled": false,
+    "show_title": true,
+    "spawn_new_on_click": false,
+    "archive_disable_buttons": false,
+    "api_protected": false,
+    "api_writable": true,
+    "persist": {
+      "enabled": true,
+      "interval_seconds": 60,
+      "cleanup_old_active": true,
+      "on_response": true,
+      "response_delay_sec": 1.5
+    },
+    "status": {
+      "show_status_line": true,
+      "show_elapsed_time": true,
+      "emoji_in_status_line": true,
+      "emoji_in_embed_title": true,
+      "animate_pending_emoji": true,
+      "animate_elapsed_time": true,
+      "emojis": {
+        "pending": "🔄",
+        "pending_alt": "🔃",
+        "success": "🟢",
+        "fail": "🔴"
+      }
+    },
+    "embed": { ... },
+    "buttons": [ ... ],
+    "selects": [ ... ]
+  }
 }
 ```
 
+**Root Panel Options:**
+*   `disabled`: *(Maintenance Mode)* Instantly greys out and locks all buttons/dropdowns. Users can read the embed, but cannot click anything. (Great for API toggling during backend restarts).
+*   `show_title`: Toggles the `🧩 **DashCord Panel** ({name})` header text above the embed.
+*   `spawn_new_on_click`: If `false`, the bot will update the *existing* message in place when clicked instead of posting a new copy at the bottom of the chat.
+*   `archive_disable_buttons`: If `false`, old messages keep their buttons clickable instead of permanently greying them out.
+*   `api_protected`: If `true`, completely blocks the Dynamic API from viewing or modifying this panel.
+*   `api_writable`: If `true`, explicitly allows the Dynamic API to edit this static panel at runtime.
+
+**The `persist` Block (Sticky UI):**
+*   `enabled`: Turns on the background loop to auto-jump the panel to the bottom of the chat if users are talking.
+*   `interval_seconds`: How often the background loop checks if the panel is buried.
+*   `cleanup_old_active`: Deletes the old panel when jumping to the bottom so the chat doesn't get cluttered.
+*   `on_response`: Automatically jumps the panel to the bottom the exact moment a webhook replies (Highly recommended).
+*   `response_delay_sec`: Overrides the command-level delay. Waits X seconds after a webhook replies before jumping to the bottom (Fixes n8n/Make race conditions where subsequent messages fire after the webhook response).
+
+**The `status` Block (Animations & Aesthetics):**
+*   `show_status_line`: Injects an audit log (`✅ Last: !deploy • User • 4:05 PM`) into the raw text of the message after a click.
+*   `show_elapsed_time`: Appends the final processing time to the status line: `... 4:05 PM (4.2s)`.
+*   `emoji_in_status_line` / `emoji_in_embed_title`: Toggles whether status emojis appear in the text line and embed title.
+*   `animate_pending_emoji`: Alternates back and forth between your `pending` and `pending_alt` emojis while the webhook is processing.
+*   `animate_elapsed_time`: Spawns a live, ticking timer `(1.5s -> 3.0s)` in the UI while waiting for your webhook.
+*   `emojis`: Don't like the `.env` default `⏳`, `✅`, `❌`? Define completely custom emojis for this specific panel here.
+  
 ---
 
 ### 4. Interactive Forms (Modals)
 
-DashCord allows you to turn **any button into a pop-up form**. Instead of just sending a predefined command when a button is clicked, Discord will prompt the user to type in data (like logging an entry or submitting a query), and *then* send that data to your webhook.
+DashCord allows you to turn **any button or dropdown (select) option into a pop-up form**. Instead of just triggering a command instantly, Discord will prompt the user to fill out input fields, merge their answers under `"modal_inputs"`, and *then* send the complete payload to your webhook.
 
-To enable this, add a `"modal"` dictionary to any button:
+#### 🚀 Binding a Modal to a Button
+To trigger a form from a standard button, add a `"modal"` dictionary directly to the button object:
 
 ```json
 {
   "label": "Deploy Update",
   "command": "ping",
-  "args": ["deploy"],
   "style": "success",
   "emoji": "🚀",
   "modal": {
     "title": "Deploy New Container",
     "inputs": [
-      { "id": "image_tag", "label": "Docker Tag / Version", "placeholder": "e.g. latest, v2.1.0", "required": true },
-      { "id": "deploy_notes", "label": "Release Notes", "placeholder": "What changed in this deployment?", "required": false, "long": true }
+      { "id": "image_tag", "label": "Docker Tag / Version", "placeholder": "e.g. latest, v2.1.0" }
     ]
   }
 }
+```
+
+#### 🌤️ Binding a Modal to a Dropdown (Select Option)
+To trigger a form from a dropdown menu, add the `"modal"` dictionary directly inside the specific option inside your `selects` array:
+
+```json
+"selects": [
+  {
+    "placeholder": "Choose a maintenance task...",
+    "options": [
+      {
+        "label": "Troubleshoot Server",
+        "command": "ping",
+        "args": ["troubleshoot"],
+        "emoji": "🛠️",
+        "modal": {
+          "title": "File Incident Ticket",
+          "inputs": [
+            { "id": "ticket_id", "label": "Jira / Incident Ticket ID", "placeholder": "e.g. DEVOPS-104", "required": true },
+            { "id": "issue_desc", "label": "Describe the Issue", "placeholder": "What is broken?", "long": true }
+          ]
+        }
+      }
+    ]
+  }
+]
 ```
 
 *   **Modal Schema Options:**
@@ -351,7 +455,14 @@ When a user uploads a file called `vocal_sample.wav` and types `!ai-task transcr
 * `{{attachment_text}}`: The raw UTF-8 text of the file (great for `.txt` or `.json` uploads).
 * `{{attachment.filename}}`: The original name of the uploaded file.
 * `{{modal_inputs.your_field_id}}`: The raw text typed by a user into a specific modal input box (e.g., `{{modal_inputs.weight_lbs}}`).
-
+* `{{timestamp}}`: The local ISO-8601 timestamp generated at execution time (e.g., `2026-07-02T15:16:00-04:00`).
+* `{{source}}`: Always `"discord"` (useful if routing multiple platforms to a single database).
+* `{{event_type}}`: The raw event trigger type (e.g., `"command"`, `"upload-only"`, or `"panel_action"`).
+* `{{meta.timezone}}`: The active timezone of the bot (e.g., `America/New_York`).
+* `{{discord.user_name}}`: The actual Discord account username/handle (e.g., `cooluser123` vs. display name `CoolUser`).
+* `{{discord.guild_id}}` / `{{discord.guild_name}}`: The server ID and server Name where the action was taken.
+* `{{discord.message_id}}` / `{{discord.interaction_id}}`: Unique Discord snowflake IDs for message mapping, audit trails, or debug logging.
+  
 ### 6. Custom HTTP Headers (Optional)
 
 By default, DashCord secures your webhooks using the `X-DashCord-Token` header globally defined in your `.env`. However, if you want to bypass your automation tool and point DashCord *directly* at a third-party API (like OpenAI, Gantry, or GitHub), you can define custom HTTP headers per-command.
@@ -464,6 +575,39 @@ DashCord fully supports Discord embeds. Just pass an array of embed objects:
 }
 ```
 
+**Ephemeral (Private) Replies:**
+If you want to keep the chat completely clean, your webhook can force the reply to be ephemeral (only the clicking user can see it):
+```json
+{
+  "reply": {
+    "content": "✅ Server restarted secretly.",
+    "ephemeral": true
+  }
+}
+```
+*(Note: If a command is configured with `"ephemeral_replies": true` in `routes.json`, all replies will be private automatically. This JSON flag allows your webhook logic to conditionally override that setting on the fly).*
+
+#### 🪵 Auto-Formatting Console Outputs (`stdout`)
+If you are running automation pipelines that execute shell commands or script tasks, formatting them into rich JSON embeds can be tedious. If your webhook response returns a root `"stdout"` key instead of a `"reply"`, DashCord automatically formats it into a cleanly styled terminal code block:
+
+```json
+{
+  "stdout": "Loaded 12 dependencies...\nStarting build compilation...\nBuild complete (1.2s)."
+}
+```
+
+**Discord Visual Result:**
+```
+Loaded 12 dependencies...
+Starting build compilation...
+Build complete (1.2s).
+```
+
+#### 📦 Middleware Response Unwrapping
+DashCord contains defensive parsing routines to prevent errors when automation platforms return wrapped structures. It will automatically detect and unwrap:
+*   **Arrays:** If your endpoint responds with a list containing a single dictionary `[{ "ok": true }]`, DashCord safely extracts index `0`.
+*   **Nesting:** If your platform wraps replies under a parent `"response"` block (e.g., `{ "response": { "reply": { ... } } }`), the bot extracts the inner data structure automatically.
+  
 *(If you do not want the bot to reply at all, return `{"reply": {"suppress": true}}` or just an empty 200 OK).*
 
 ---
@@ -485,9 +629,9 @@ DYNAMIC_ROUTES_PATH=config/dynamic_routes.json
 API_ALLOW_STATIC_OVERWRITE=false 
 ```
 
-All requests require your shared secret passed in the headers:
+All requests require your shared secret passed in the headers as either `X-DashCord-Token` or the standard HTTP `Authorization` header:
 ```http
-X-DashCord-Token: your_secret_here
+Authorization: your_secret_here
 ```
 
 ### 2. Endpoint & Schema
@@ -780,13 +924,18 @@ DashCord is highly customizable. You can fine-tune exactly how the bot, your web
 - `PANEL_REPOST_ON_STARTUP`: When the bot boots up, it will scan channels to find your panels and "re-attach" itself to them so buttons keep working (Default: `true`).
 - `PANEL_FORCE_NEW_ON_STARTUP`: Instead of editing the existing panel in-place on boot, the bot will delete the old one and post a brand new panel at the bottom of the chat (Default: `true`).
 
-#### 🎨 Panel Visual Status Indicators
-*When users click buttons, DashCord can dynamically inject status emojis into the UI.*
+#### 🎨 Panel Visual Status Indicators & Animations
+*When users click buttons, DashCord can dynamically inject status emojis and live timers into the UI.*
 - `PANEL_STATUS_EMOJI_PENDING`: The emoji shown while your webhook is processing the action (Default: `⏳`).
 - `PANEL_STATUS_EMOJI_SUCCESS`: The emoji shown when your webhook completes the action successfully (Default: `✅`).
 - `PANEL_STATUS_EMOJI_FAIL`: The emoji shown when the webhook times out or fails (Default: `❌`).
 - `PANEL_STATUS_EMOJI_IN_EMBED`: Automatically append the status emoji to the rich Embed Title (e.g., `🏠 Smart Home Hub ✅`) (Default: `true`).
 - `PANEL_STATUS_EMOJI_TITLE`: Automatically prepend the status emoji to the text status line above the embed (e.g., `✅ Last: !ping • User • 4:05 PM`) (Default: `true`).
+- `PANEL_STATUS_ANIMATE_PENDING`: Enables an animation loop that alternates the pending emoji while waiting for a response (Default: `false`).
+- `PANEL_STATUS_EMOJI_PENDING_ALT`: The secondary emoji used if `PANEL_STATUS_ANIMATE_PENDING` is enabled (Default: `⌛`).
+- `PANEL_STATUS_ANIMATE_INTERVAL`: The speed (in seconds) of the animation. Discord strictly limits message edits, so `1.5` is the minimum safe limit (Default: `1.5`).
+- `PANEL_STATUS_SHOW_ELAPSED`: Appends the final processing time to the status line once completed (e.g., `(4.2s)`) (Default: `true`).
+- `PANEL_STATUS_ANIMATE_ELAPSED`: Spawns a live ticking timer `(1.5s)` that visibly counts up in real-time while processing (Default: `true`).
 
 #### 🧹 Panel Persistence & Cleanup
 *Persistence is the bot's ability to keep panels at the bottom of the chat so they don't get lost when users are talking.*

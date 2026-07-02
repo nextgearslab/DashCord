@@ -2,162 +2,269 @@
   "commands": {
     "ping": {
       "endpoint": "https://hook.us1.make.com/your-webhook-id",
-      "method": "POST",
-      "api_writable": true,
-      "panel_persist_delay": 1.5,
-      "allowed_users": [],
-      "allowed_channels": []
+      "method": "POST"
     },
-    "upload": {
-      "endpoint": "https://n8n.yourdomain.com/webhook/file-upload",
-      "method": "POST",
-      "accept_attachments": true,
-      "allow_without_command": true,
-      "attachment_rules": {
-        "extensions": [".json", ".csv"],
-        "max_bytes": 2500000,
-        "require_json": false
-      },
-      "attachment_reply": {
-        "mode": "errors",
-        "success_template": "📦 Successfully sent {ok} out of {total} files.",
-        "error_template": "❌ Upload errors ({bad}/{total}):\n{errors}"
-      }
-    },
-    "weather": {
-      "endpoint": "https://your-api.com/weather",
+    "uptime": {
+      "endpoint": "https://your-api.com/system-uptime",
       "method": "GET",
-      "api_protected": true,
-      "allowed_channels": [112233445566778899]
+      "description": "Quickly check the operational status of the server"
     },
-    "advanced-ai": {
-      "endpoint": "http://192.168.1.100:8000/api/run-task",
+    "ultra-orchestrator": {
+      "endpoint": "https://n8n.yourdomain.com/webhook/ultra-orchestrator",
       "method": "POST",
-      "allowed_users": [987654321098765432],
+      "description": "Trigger the ultimate automation orchestrator pipeline with file inputs",
+      "allowed_users": [1443242472563336, "8085486110958357835"],
+      "allowed_channels": [1204729851901165573, "2804794339760600279"],
+      "timeout": 300,
+      "ephemeral_replies": true,
+      "reactions_enabled": false,
+      "action_persist_delay": 3.5,
+      "api_protected": false,
+      "api_writable": true,
       "accept_attachments": true,
       "allow_without_command": true,
       "headers": {
-        "Authorization": "Bearer YOUR_CUSTOM_TOKEN_HERE",
-        "X-Custom-Flag": "true"
+        "Authorization": "Bearer sk-proj-ULTRA_SECRET_TOKEN_12345",
+        "X-Pipeline-Priority": "critical",
+        "X-Client-Source": "DashCord-Headless"
+      },
+      "attachment_rules": {
+        "extensions": [".json", ".txt", ".csv", ".wav"],
+        "max_bytes": 5000000,
+        "require_json": false
+      },
+      "attachment_reply": {
+        "mode": "always",
+        "success_template": "📦 Pipeline ingested {ok}/{total} files successfully.",
+        "error_template": "❌ Pipeline rejected ({bad}/{total}) files:\n{errors}"
       },
       "body_template": {
-        "user_data": {
-          "id": "{{discord.user_id}}",
-          "name": "{{discord.user_display}}",
-          "channel": "{{discord.channel_name}}"
+        "source_platform": "discord",
+        "event_metadata": {
+          "nonce_id": "{{nonce}}",
+          "trigger_event": "{{event_type}}",
+          "trigger_command": "{{command}}",
+          "timezone_context": "{{meta.timezone}}",
+          "timestamp_iso": "{{timestamp}}"
         },
-        "task_data": {
-          "user_input": "{{raw}}",
-          "args_list": "{{args}}",
-          "request_id": "{{nonce}}",
-          "file_base64": "{{attachment_b64}}"
+        "discord_sender": {
+          "user_id": "{{discord.user_id}}",
+          "user_display": "{{discord.user_display}}",
+          "user_handle": "{{discord.user_name}}",
+          "guild_id": "{{discord.guild_id}}",
+          "guild_name": "{{discord.guild_name}}",
+          "channel_id": "{{discord.channel_id}}",
+          "channel_name": "{{discord.channel_name}}",
+          "message_id": "{{discord.message_id}}",
+          "interaction_id": "{{discord.interaction_id}}"
         },
-        "trigger_source": "discord",
-        "dry_run": false
+        "user_payload": {
+          "raw_input_text": "{{raw}}",
+          "parsed_arguments": "{{args}}",
+          "first_argument": "{{args.0}}",
+          "second_argument": "{{args.1}}",
+          "manual_modal_notes": "{{modal_inputs.deploy_notes}}",
+          "manual_modal_version": "{{modal_inputs.image_tag}}"
+        },
+        "binary_attachments": {
+          "filename": "{{attachment.filename}}",
+          "bytes_length": "{{attachment_bytes_len}}",
+          "base64_encoded_file": "{{attachment_b64}}",
+          "extracted_utf8_text": "{{attachment_text}}",
+          "source_meta_payload_b64": "{{source_meta_b64}}"
+        },
+        "system_flags": {
+          "dry_run": false,
+          "bypass_cache": true
+        }
       }
     },
-    "googlehealth": {
-      "endpoint": "https://n8n.yourdomain.com/webhook/googlehealth",
-      "method": "POST",
+    "stealth-query": {
+      "endpoint": "https://n8n.yourdomain.com/webhook/stealth-query",
+      "method": "GET",
+      "description": "Execute silent telemetry queries privately",
       "allowed_users": [],
-      "allowed_channels": []
+      "allowed_channels": [],
+      "timeout": 15,
+      "ephemeral_replies": true,
+      "reactions_enabled": false,
+      "api_protected": true,
+      "api_writable": false,
+      "body_template": {
+        "action": "query",
+        "query_param": "{{raw}}",
+        "requester": "{{discord.user_name}}"
+      }
     }
   },
   "panels": {
-    "Server_Controls": {
-      "channels": ["123456789012345678", "876543210987654321"],
-      "api_writable": true,
-      "persist": {
-        "enabled": true,
-        "interval_seconds": 120,
-        "cleanup_old_active": true
-      },
-      "embed": {
-        "title": "🖥️ Production Server Controls",
-        "description": "Critical infrastructure management. Authorized users only.",
-        "color": "#e74c3c"
-      },
+    "Simple_Alert": {
+      "channels": ["2396929317308298697"],
+      "content": "⚠️ **Backup Warning:** The scheduled database backup completed, but detected empty tables. Click below to review the logs.",
       "buttons": [
         {
-          "label": "Restart Server",
+          "label": "Review Logs",
           "command": "ping",
-          "args": ["restart"],
-          "style": "danger",
-          "emoji": "⚠️"
-        },
-        {
-          "label": "Check Status",
-          "command": "ping",
-          "args": ["status"],
-          "style": "primary",
-          "emoji": "📡"
-        },
-        {
-          "label": "Deploy Update",
-          "command": "ping",
-          "args": ["deploy"],
-          "style": "success",
-          "emoji": "🚀",
-          "modal": {
-            "title": "Deploy New Container",
-            "inputs": [
-              { "id": "image_tag", "label": "Docker Tag / Version", "placeholder": "e.g. latest, v2.1.0", "required": true },
-              { "id": "deploy_notes", "label": "Release Notes", "placeholder": "What changed in this deployment?", "required": false, "long": true }
-            ]
-          }
+          "style": "secondary"
         }
       ]
     },
-    "Home_Automation": {
+    "Quick_Actions": {
       "channels": ["112233445566778899"],
-      "content": "👋 **Welcome to your Smart Home Hub!** Use the menus below to control your environment.",
-      "show_title": false,
-      "api_protected": true,
       "embed": {
-        "title": "🏠 Smart Home Hub",
+        "title": "⚡ Quick Server Tools",
+        "description": "Execute basic system connectivity checks with a single click.",
         "color": "#3498db"
+      },
+      "buttons": [
+        {
+          "label": "Ping",
+          "command": "ping",
+          "style": "primary"
+        },
+        {
+          "label": "Get Uptime",
+          "command": "uptime",
+          "style": "secondary"
+        }
+      ]
+    },
+    "Ultimate_Interactive_Hub": {
+      "channels": ["112233445566778899", "2396929317308298697"],
+      "disabled": false,
+      "show_title": true,
+      "spawn_new_on_click": false,
+      "archive_disable_buttons": true,
+      "api_protected": false,
+      "api_writable": true,
+      "content": "👋 **System Orchestrator Core online.** Execute commands or log metrics directly.",
+      "persist": {
+        "enabled": true,
+        "interval_seconds": 30,
+        "cleanup_old_active": true,
+        "on_response": true,
+        "response_delay_sec": 2.0
+      },
+      "status": {
+        "show_status_line": true,
+        "show_elapsed_time": true,
+        "emoji_in_status_line": true,
+        "emoji_in_embed_title": true,
+        "animate_pending_emoji": true,
+        "animate_elapsed_time": true,
+        "emojis": {
+          "pending": "⏳",
+          "pending_alt": "⌛",
+          "success": "✅",
+          "fail": "❌"
+        }
+      },
+      "embed": {
+        "title": "⚙️ Ultimate System Hub",
+        "description": "Programmatic interface to n8n pipelines, Wake-on-LAN routing, and telemetry analytics.",
+        "color": "#1abc9c",
+        "thumbnail": "https://yourdomain.com/docs/logo.png",
+        "image": "https://yourdomain.com/docs/dashboard.png"
       },
       "selects": [
         {
-          "placeholder": "🌤️ Weather & Environment...",
+          "placeholder": "📊 Choose a metrics dashboard...",
           "options": [
-            { "label": "Get Local Weather", "command": "weather", "args": ["now"], "emoji": "🌤️" },
-            { "label": "Check Indoor Temp", "command": "weather", "args": ["indoor"], "emoji": "🌡️" }
+            {
+              "label": "Activity Analytics",
+              "command": "stealth-query",
+              "args": ["activity"],
+              "emoji": "🏃",
+              "description": "View overall physical step counts and active time metrics"
+            },
+            {
+              "label": "Vitals Analytics",
+              "command": "stealth-query",
+              "args": ["vitals"],
+              "emoji": "🩺",
+              "description": "Retrieve blood oxygen, skin temp, and skin metrics"
+            }
+          ]
+        },
+        {
+          "placeholder": "✍️ Choose a manual logging option...",
+          "options": [
+            {
+              "label": "Log Daily Weight",
+              "command": "ultra-orchestrator",
+              "args": ["log_weight"],
+              "emoji": "⚖️",
+              "description": "Submit current body weight directly to Google Health",
+              "modal": {
+                "title": "Log Daily Weight Metrics",
+                "inputs": [
+                  {
+                    "id": "weight_lbs",
+                    "label": "Body Weight (lbs)",
+                    "placeholder": "e.g., 185.4",
+                    "required": true,
+                    "long": false
+                  },
+                  {
+                    "id": "log_notes",
+                    "label": "Context / Notes",
+                    "placeholder": "e.g., post-workout, fasting",
+                    "required": false,
+                    "long": true
+                  }
+                ]
+              }
+            }
           ]
         }
       ],
       "buttons": [
         {
-          "label": "Run AI Task",
-          "command": "advanced-ai",
-          "args": ["force"],
+          "label": "Deploy App",
+          "command": "ultra-orchestrator",
+          "args": ["deploy"],
           "style": "success",
-          "emoji": "🧠"
-        },
-        { 
-          "label": "Log Weight", 
-          "command": "googlehealth", 
-          "args": ["log_weight"], 
-          "style": "primary", 
-          "emoji": "⚖️",
+          "emoji": "🚀",
           "modal": {
-            "title": "Log Daily Weight",
+            "title": "Deploy Server Container",
             "inputs": [
-              { 
-                "id": "weight_lbs", 
-                "label": "Weight (lbs)", 
-                "placeholder": "e.g. 185.2", 
-                "required": true 
+              {
+                "id": "image_tag",
+                "label": "Docker Tag / Version",
+                "placeholder": "e.g., latest, v2.1.0",
+                "required": true,
+                "long": false
               },
-              { 
-                "id": "notes", 
-                "label": "Notes (Optional)", 
-                "placeholder": "How are you feeling?", 
+              {
+                "id": "deploy_notes",
+                "label": "Deployment Notes",
+                "placeholder": "Enter change log or server details...",
                 "required": false,
-                "long": true 
+                "long": true
               }
             ]
           }
+        },
+        {
+          "label": "Stop Node",
+          "command": "ultra-orchestrator",
+          "args": ["stop"],
+          "style": "danger",
+          "emoji": "🛑"
+        },
+        {
+          "label": "Status Audit",
+          "command": "stealth-query",
+          "args": ["audit"],
+          "style": "primary",
+          "emoji": "📡"
+        },
+        {
+          "label": "Developer Help",
+          "command": "stealth-query",
+          "args": ["help"],
+          "style": "secondary",
+          "emoji": "🆘"
         }
       ]
     }
