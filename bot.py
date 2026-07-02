@@ -51,52 +51,79 @@ def _dbg(msg: str, *args):
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ----------------------------
-# LOAD ENV
-# ----------------------------
+# ------------------------------------------------------------------------------
+# LOAD ENV & ESTABLISH FALLBACKS
+# ------------------------------------------------------------------------------
 load_dotenv()
 load_dotenv("secrets.env", override=True)
 
-ROUTES_PATH = os.getenv("ROUTES_PATH", os.path.join(BASE_DIR, "routes.json"))
+# 🤖 Core Discord Bot Settings
+DISCORD_TOKEN  = os.getenv("DISCORD_TOKEN")
+COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
+TIMEZONE       = os.getenv("TIMEZONE", "America/New_York")
+
+# 📁 Storage & Configuration Paths
+ROUTES_PATH         = os.getenv("ROUTES_PATH", os.path.join(BASE_DIR, "routes.json"))
 DYNAMIC_ROUTES_PATH = os.getenv("DYNAMIC_ROUTES_PATH", os.path.join(BASE_DIR, "config/dynamic_routes.json"))
 
-VERIFY_TLS = get_env_bool("VERIFY_TLS", "true")
-DEBUG_WEBHOOK = get_env_bool("DEBUG_WEBHOOK", "false")
+# ⚙️ Chat Commands & Helper Settings
 DISPLAY_UNKNOWN_COMMAND_ERROR = get_env_bool("DISPLAY_UNKNOWN_COMMAND_ERROR", "true")
-
 DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS = set(
     cid.strip() for cid in os.getenv("DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS", "").split(",") if cid.strip()
 )
 
-# ----------------------------
-# REACTION OPTIONS (.env)
-# ----------------------------
+# 🎭 Chat Command Reactions (⏳, ✅, ❌ on typed user messages)
 COMMAND_REACTION_ENABLED = get_env_bool("COMMAND_REACTION_ENABLED", "true")
 COMMAND_REACTION_PENDING = os.getenv("COMMAND_REACTION_PENDING", "⏳")
 COMMAND_REACTION_SUCCESS = os.getenv("COMMAND_REACTION_SUCCESS", "✅")
 COMMAND_REACTION_FAIL    = os.getenv("COMMAND_REACTION_FAIL", "❌")
 
-# ----------------------------
-# PANEL OPTIONS (.env)
-# ----------------------------
-PANEL_SHOW_TITLE_DEFAULT         = get_env_bool("PANEL_SHOW_TITLE_DEFAULT", "true")
-PANEL_REPOST_ON_STARTUP          = get_env_bool("PANEL_REPOST_ON_STARTUP", "true")
-PANEL_DELETE_OLD_PANELS          = get_env_bool("PANEL_DELETE_OLD_PANELS", "true")
-PANEL_SCAN_LIMIT                 = int(os.getenv("PANEL_SCAN_LIMIT", "50"))
-PANEL_STATUS_LINE                = get_env_bool("PANEL_STATUS_LINE", "true")
-PANEL_STATUS_EMOJI_PENDING       = os.getenv("PANEL_STATUS_EMOJI_PENDING", "⏳")
-PANEL_STATUS_EMOJI_SUCCESS       = os.getenv("PANEL_STATUS_EMOJI_SUCCESS", "✅")
-PANEL_STATUS_EMOJI_FAIL          = os.getenv("PANEL_STATUS_EMOJI_FAIL", "❌")
-PANEL_STATUS_EMOJI_IN_EMBED      = get_env_bool("PANEL_STATUS_EMOJI_IN_EMBED", "true")
-PANEL_STATUS_EMOJI_TITLE         = get_env_bool("PANEL_STATUS_EMOJI_TITLE", "true")
-PANEL_SPAWN_NEW_ON_CLICK         = get_env_bool("PANEL_SPAWN_NEW_ON_CLICK", "true")
-PANEL_ARCHIVE_DISABLE_BUTTONS    = get_env_bool("PANEL_ARCHIVE_DISABLE_BUTTONS", "true")
-PANEL_FORCE_NEW_ON_STARTUP       = get_env_bool("PANEL_FORCE_NEW_ON_STARTUP", "true")
+# 🎛️ Panel Interaction & Behavior Baselines
+PANEL_SHOW_TITLE_DEFAULT      = get_env_bool("PANEL_SHOW_TITLE_DEFAULT", "true")
+PANEL_REPOST_ON_STARTUP        = get_env_bool("PANEL_REPOST_ON_STARTUP", "true")
+PANEL_SPAWN_NEW_ON_CLICK       = get_env_bool("PANEL_SPAWN_NEW_ON_CLICK", "true")
+PANEL_ARCHIVE_DISABLE_BUTTONS  = get_env_bool("PANEL_ARCHIVE_DISABLE_BUTTONS", "true")
+PANEL_FORCE_NEW_ON_STARTUP     = get_env_bool("PANEL_FORCE_NEW_ON_STARTUP", "true")
+
+# 🎨 Panel Status Lines & Emojis
+PANEL_STATUS_LINE           = get_env_bool("PANEL_STATUS_LINE", "true")
+PANEL_STATUS_EMOJI_PENDING  = os.getenv("PANEL_STATUS_EMOJI_PENDING", "⏳")
+PANEL_STATUS_EMOJI_SUCCESS  = os.getenv("PANEL_STATUS_EMOJI_SUCCESS", "✅")
+PANEL_STATUS_EMOJI_FAIL     = os.getenv("PANEL_STATUS_EMOJI_FAIL", "❌")
+PANEL_STATUS_EMOJI_IN_EMBED = get_env_bool("PANEL_STATUS_EMOJI_IN_EMBED", "true")
+PANEL_STATUS_EMOJI_TITLE    = get_env_bool("PANEL_STATUS_EMOJI_TITLE", "true")
+
+# ⏱️ Panel Status Animations & Elapsed Timers
+PANEL_STATUS_ANIMATE_PENDING   = get_env_bool("PANEL_STATUS_ANIMATE_PENDING", "false")
+PANEL_STATUS_EMOJI_PENDING_ALT = os.getenv("PANEL_STATUS_EMOJI_PENDING_ALT", "⌛")
+PANEL_STATUS_ANIMATE_INTERVAL  = float(os.getenv("PANEL_STATUS_ANIMATE_INTERVAL", "1.5"))
+PANEL_STATUS_SHOW_ELAPSED      = get_env_bool("PANEL_STATUS_SHOW_ELAPSED", "true")
+PANEL_STATUS_ANIMATE_ELAPSED   = get_env_bool("PANEL_STATUS_ANIMATE_ELAPSED", "true")
+
+# 🧹 Panel Cleanup & History Scan Limits
+PANEL_DELETE_OLD_PANELS = get_env_bool("PANEL_DELETE_OLD_PANELS", "true")
+PANEL_SCAN_LIMIT        = int(os.getenv("PANEL_SCAN_LIMIT", "50"))
+
+# 🏃 Sticky UI / Panel Persistence Loop
 PANEL_PERSIST_DEFAULT            = get_env_bool("PANEL_PERSIST_DEFAULT", "false")
 PANEL_PERSIST_INTERVAL_SECONDS   = int(os.getenv("PANEL_PERSIST_INTERVAL_SECONDS", "45"))
-PANEL_PERSIST_ON_RESPONSE        = get_env_bool("PANEL_PERSIST_ON_RESPONSE", "true") 
+PANEL_PERSIST_ON_RESPONSE        = get_env_bool("PANEL_PERSIST_ON_RESPONSE", "true")
 PANEL_PERSIST_ON_RESPONSE_DELAY  = float(os.getenv("PANEL_PERSIST_ON_RESPONSE_DELAY", "0"))
 PANEL_PERSIST_CLEANUP_OLD_ACTIVE = get_env_bool("PANEL_PERSIST_CLEANUP_OLD_ACTIVE", "true")
+
+# 📡 Programmatic REST API Server Settings
+API_ENABLED                 = get_env_bool("API_ENABLED", "false")
+API_PORT                    = int(os.getenv("API_PORT", "8080"))
+API_ALLOW_STATIC_OVERWRITE  = get_env_bool("API_ALLOW_STATIC_OVERWRITE", "false")
+
+# 🌐 Webhook Connectivity & Advanced Security
+DASHCORD_SHARED_SECRET = os.getenv("DASHCORD_SHARED_SECRET", "")
+HTTP_TIMEOUT_SECONDS   = float(os.getenv("HTTP_TIMEOUT_SECONDS", "20"))
+VERIFY_TLS             = get_env_bool("VERIFY_TLS", "true")
+
+# 🐞 Troubleshooting & Logging Controls
+DASHCORD_DEBUG = get_env_bool("DASHCORD_DEBUG", "false")
+DEBUG_WEBHOOK  = get_env_bool("DEBUG_WEBHOOK", "false")
 
 # channel_id -> { panel_name -> message_id }
 PANEL_STATE: dict[str, dict[str, str]] = {}
@@ -104,19 +131,6 @@ PANEL_STATE: dict[str, dict[str, str]] = {}
 # channel_id -> { panel_name -> active_message_id }
 PANEL_ACTIVE: dict[str, dict[str, str]] = {}
 
-
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
-TIMEZONE = os.getenv("TIMEZONE", "America/New_York")
-DASHCORD_SHARED_SECRET = os.getenv("DASHCORD_SHARED_SECRET", "")
-
-HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "20"))
-API_ENABLED = get_env_bool("API_ENABLED", "false")
-API_PORT = int(os.getenv("API_PORT", "8080"))
-API_ALLOW_STATIC_OVERWRITE = get_env_bool("API_ALLOW_STATIC_OVERWRITE", "false")
-
-PLACEHOLDER_RE = re.compile(r"\{\{([a-zA-Z0-9_.]+)\}\}")
-AIOHTTP_SESSION: aiohttp.ClientSession | None = None
 
 # ----------------------------
 # LOAD ROUTES.JSON & DYNAMIC ROUTES
@@ -864,7 +878,8 @@ async def post_to_webhook_async(command: str, payload: dict) -> dict:
     _dbg("WEBHOOK request cmd=%s method=%s endpoint=%s timeout=%s verify_tls=%s",
          command, method, endpoint, HTTP_TIMEOUT_SECONDS, VERIFY_TLS)
 
-    timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+    custom_timeout = float(cfg.get("timeout", HTTP_TIMEOUT_SECONDS))
+    timeout = aiohttp.ClientTimeout(total=custom_timeout)
     
     global AIOHTTP_SESSION
     session = AIOHTTP_SESSION
@@ -1018,28 +1033,78 @@ async def _delayed_persist(channel_id: int, delay: float):
     log.info(f"⏳ Delay finished for channel {channel_id}. Activating persistence check.")
     trigger_immediate_persist(channel_id)
 
+async def _animate_pending_message(msg: discord.Message, base_content: str | None, base_embed: discord.Embed | None, archived_view: discord.ui.View, start_time: float, opts: dict):
+    """Animates a pending panel message by alternating emojis and/or ticking up an elapsed timer."""
+    
+    if not opts.get("animate_pending_emoji") and not opts.get("animate_elapsed_time"):
+        return
+
+    emoji1 = opts.get("emoji_pending")
+    emoji2 = opts.get("emoji_pending_alt")
+    current_emoji = emoji1
+
+    try:
+        while True:
+            await asyncio.sleep(PANEL_STATUS_ANIMATE_INTERVAL)
+            
+            anim_content = base_content
+            anim_embed = base_embed.copy() if base_embed else None
+            
+            # 1. Handle Emoji Swap Animation
+            if opts.get("animate_pending_emoji"):
+                current_emoji = emoji2 if current_emoji == emoji1 else emoji1
+
+                # Swap status line text
+                if anim_content and opts.get("show_status_line") and opts.get("emoji_in_status_line"):
+                    target = f"{emoji1} Last:"
+                    if target in anim_content:
+                        anim_content = anim_content.replace(target, f"{current_emoji} Last:")
+                
+                # Swap embed title
+                if anim_embed and opts.get("emoji_in_embed_title"):
+                    title = anim_embed.title or ""
+                    if title.endswith(f" {emoji1}"):
+                        title = title[:-len(emoji1)-1]
+                    elif title.endswith(f" {emoji2}"):
+                        title = title[:-len(emoji2)-1]
+                    anim_embed.title = f"{title} {current_emoji}".strip()
+
+            # 2. Handle Live Elapsed Time Animation
+            if opts.get("show_elapsed_time") and opts.get("animate_elapsed_time"):
+                if anim_content and opts.get("show_status_line"):
+                    elapsed = time.monotonic() - start_time
+                    anim_content += f" ({elapsed:.1f}s)"
+
+            # 3. Fire the Edit Request to Discord
+            try:
+                await msg.edit(content=anim_content, embed=anim_embed, view=archived_view)
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    retry_after = e.response.headers.get("Retry-After") if e.response else None
+                    sleep_time = float(retry_after) if retry_after else PANEL_STATUS_ANIMATE_INTERVAL + 1
+                    await asyncio.sleep(sleep_time)
+                else:
+                    break
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        log.warning(f"⚠️ Animation task encountered an error: {e}")
 
 async def process_panel_action(interaction: discord.Interaction, panel_name: str, command: str, args: list, modal_data: dict = None):
     """Shared execution logic for Buttons, Selects, and Modals."""
+    animation_task = None
     log.info(f"🖱️ User '{interaction.user.display_name}' clicked action '{command}' on panel '{panel_name}'")
 
     cfg = _get_cmd_cfg(command)
     if cfg.get("accept_attachments"):
         log.warning(f"⚠️ User '{interaction.user.display_name}' clicked action '{command}' but it requires a file upload.")
-        await interaction.followup.send(
-            "❌ This command requires a file upload. Use the typed command with an attached file.",
-            ephemeral=True,
-        )
+        await interaction.followup.send("❌ This command requires a file upload.", ephemeral=True)
         return
 
     payload = build_payload(
-        event_type="panel_action",
-        command=command,
-        args=args,
+        event_type="panel_action", command=command, args=args,
         raw=f"[panel] {command} {' '.join(args)}".strip(),
-        guild=interaction.guild,
-        channel=interaction.channel,
-        user=interaction.user,
+        guild=interaction.guild, channel=interaction.channel, user=interaction.user,
         interaction_id=str(interaction.id),
     )
     if modal_data:
@@ -1049,110 +1114,126 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
     current_embed = None
     current_content = None
     archived_view = None
+    start_time = time.monotonic() 
+    
+    # ====================================================================
+    # MAX CONFIGURATION RESOLUTION (Panel Config overrides ENV Globals)
+    # ====================================================================
+    panel_cfg = PANELS.get(panel_name, {})
+    status_opts = panel_cfg.get("status", {})
+    
+    # Clean, descriptive boolean flags
+    opt_show_status_line     = status_opts.get("show_status_line", PANEL_STATUS_LINE)
+    opt_show_elapsed_time    = status_opts.get("show_elapsed_time", PANEL_STATUS_SHOW_ELAPSED)
+    opt_emoji_in_status_line = status_opts.get("emoji_in_status_line", PANEL_STATUS_EMOJI_TITLE)
+    opt_emoji_in_embed_title = status_opts.get("emoji_in_embed_title", PANEL_STATUS_EMOJI_IN_EMBED)
+    opt_animate_pending      = status_opts.get("animate_pending_emoji", PANEL_STATUS_ANIMATE_PENDING)
+    opt_animate_elapsed      = status_opts.get("animate_elapsed_time", PANEL_STATUS_ANIMATE_ELAPSED)
+    
+    # Custom Panel Emojis
+    emojis_cfg = status_opts.get("emojis", {})
+    emoji_pending     = emojis_cfg.get("pending", PANEL_STATUS_EMOJI_PENDING)
+    emoji_pending_alt = emojis_cfg.get("pending_alt", PANEL_STATUS_EMOJI_PENDING_ALT)
+    emoji_success     = emojis_cfg.get("success", PANEL_STATUS_EMOJI_SUCCESS)
+    emoji_fail        = emojis_cfg.get("fail", PANEL_STATUS_EMOJI_FAIL)
+    
+    opt_spawn_new       = panel_cfg.get("spawn_new_on_click", PANEL_SPAWN_NEW_ON_CLICK)
+    opt_archive_disable = panel_cfg.get("archive_disable_buttons", PANEL_ARCHIVE_DISABLE_BUTTONS)
+    
+    anim_opts = {
+        "animate_pending_emoji": opt_animate_pending,
+        "animate_elapsed_time": opt_animate_elapsed,
+        "show_status_line": opt_show_status_line,
+        "emoji_in_status_line": opt_emoji_in_status_line,
+        "emoji_in_embed_title": opt_emoji_in_embed_title,
+        "show_elapsed_time": opt_show_elapsed_time,
+        "emoji_pending": emoji_pending,
+        "emoji_pending_alt": emoji_pending_alt
+    }
 
-    # 1. Archive immediately & Set Pending State (⏳)
+    # 1. Archive immediately & Set Pending State
     try:
         if msg:
-            panel_cfg = PANELS.get(panel_name, {})
             content, embed = _build_panel_message(panel_name, panel_cfg)
             
-            # Fallback: If dynamic panel config was lost, preserve original msg text
+            # Fallback for dynamic edits
             if not panel_cfg and msg.content:
                 content = msg.content
-                # Strip out ANY previous status lines (with or without emojis/newlines)
                 for marker in [
-                    f"\n{PANEL_STATUS_EMOJI_SUCCESS} Last: `", f"\n{PANEL_STATUS_EMOJI_FAIL} Last: `", f"\n{PANEL_STATUS_EMOJI_PENDING} Last: `", "\nLast: `",
-                    f"{PANEL_STATUS_EMOJI_SUCCESS} Last: `", f"{PANEL_STATUS_EMOJI_FAIL} Last: `", f"{PANEL_STATUS_EMOJI_PENDING} Last: `", "Last: `"
+                    f"\n{emoji_success} Last: `", f"\n{emoji_fail} Last: `", f"\n{emoji_pending} Last: `", "\nLast: `",
+                    f"{emoji_success} Last: `", f"{emoji_fail} Last: `", f"{emoji_pending} Last: `", "Last: `"
                 ]:
                     if marker in content:
                         content = content.split(marker)[0].strip()
                         break
-                        
                 embed = msg.embeds[0] if msg.embeds else None
             
-            if PANEL_STATUS_LINE:
-                try:
-                    ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p")
-                except Exception:
-                    ts = datetime.now().strftime("%I:%M %p").lstrip("0")
-                
+            if opt_show_status_line:
+                ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p") if TIMEZONE else datetime.now().strftime("%I:%M %p").lstrip("0")
                 user_display = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "Someone")
                 last_cmd = f"{command} {' '.join(args)}".strip()
                 safe_content = content if content else ""
-                
-                # Check if we should render the emoji in the status line text
-                emoji_prefix = f"{PANEL_STATUS_EMOJI_PENDING} " if PANEL_STATUS_EMOJI_TITLE else ""
+                emoji_prefix = f"{emoji_pending} " if opt_emoji_in_status_line else ""
                 content = f"{safe_content}\n{emoji_prefix}Last: `{last_cmd}` • {user_display} • {ts}".strip()
 
-                if len(content) > 2000:
-                    content = content[:1997] + "..."
+                if len(content) > 2000: content = content[:1997] + "..."
 
-            # Add the PENDING emoji to the Embed Title
-            if embed and PANEL_STATUS_EMOJI_IN_EMBED:
-                embed.title = f"{embed.title or ''} {PANEL_STATUS_EMOJI_PENDING}".strip()
+            if embed and opt_emoji_in_embed_title:
+                embed.title = f"{embed.title or ''} {emoji_pending}".strip()
                 
             current_embed = embed
             current_content = content
-
-            archived_view = DashPanel(
-                panel_name,
-                panel_cfg,
-                disabled=PANEL_ARCHIVE_DISABLE_BUTTONS
-            )
+            archived_view = DashPanel(panel_name, panel_cfg, disabled=opt_archive_disable)
+            
             await msg.edit(content=content, embed=embed, view=archived_view)
+            
+            if opt_animate_pending or opt_animate_elapsed:
+                animation_task = asyncio.create_task(_animate_pending_message(msg, content, embed, archived_view, start_time, anim_opts))
 
-            # Untrack this message if we are archiving it, so we don't accidentally delete it later
-            if PANEL_ARCHIVE_DISABLE_BUTTONS and interaction.channel:
-                cid_int = interaction.channel.id
-                cid_str = str(cid_int)
-                
-                if _get_active_panel_msg_id(cid_int, panel_name) == str(msg.id):
-                    if cid_str in PANEL_ACTIVE:
-                        PANEL_ACTIVE[cid_str].pop(panel_name, None)
-                if _get_panel_msg_id(cid_int, panel_name) == str(msg.id):
-                    if cid_str in PANEL_STATE:
-                        PANEL_STATE[cid_str].pop(panel_name, None)
+            if opt_archive_disable and interaction.channel:
+                cid_str = str(interaction.channel.id)
+                if _get_active_panel_msg_id(interaction.channel.id, panel_name) == str(msg.id):
+                    PANEL_ACTIVE.get(cid_str, {}).pop(panel_name, None)
+                if _get_panel_msg_id(interaction.channel.id, panel_name) == str(msg.id):
+                    PANEL_STATE.get(cid_str, {}).pop(panel_name, None)
     except Exception as e:
-        log.warning(f"⚠️ Failed to edit/archive panel message (Missing permissions?): {e}")
+        log.warning(f"⚠️ Failed to edit/archive panel message: {e}")
 
-    # 2. Spawn the new one immediately (Skip if dynamic panel config is missing from a restart)
-    if PANEL_SPAWN_NEW_ON_CLICK and interaction.channel and PANELS.get(panel_name):
+    # 2. Spawn the new one immediately
+    if opt_spawn_new and interaction.channel and PANELS.get(panel_name):
         try:
-            await _post_panel_to_channel(
-                interaction.channel,
-                panel_name,
-                PANELS.get(panel_name, {}),
-                force_new=True,
-            )
+            await _post_panel_to_channel(interaction.channel, panel_name, PANELS.get(panel_name, {}), force_new=True)
         except Exception as e:
-            log.error(f"⚠️ Failed to spawn new panel '{panel_name}' after button click: {e}", exc_info=True)
+            log.error(f"⚠️ Failed to spawn new panel '{panel_name}': {e}", exc_info=True)
 
     # 3. Webhook call
     is_success = False
     try:
-        _dbg("Webhook button call start cmd=%s", command)
         data = await post_to_webhook_async(command, payload)
-        _dbg("Webhook button call end cmd=%s", command)
-
         is_success = data.get("ok", True) if isinstance(data, dict) else True
 
         reply = (data or {}).get("reply") or {}
-        if not isinstance(reply, dict):
-            reply = {"content": str(reply)}
+        if not isinstance(reply, dict): reply = {"content": str(reply)}
 
         suppress = bool(reply.get("suppress") or reply.get("supress"))
         reply_content = (reply.get("content") or "").strip()
-
-        # Only send a followup message if it's NOT suppressed and there is content
-        if not suppress and reply_content:
-            await interaction.followup.send(content=reply_content[:2000], ephemeral=False)
         
-        # ALWAYS trigger the panel persist, even if the n8n response was empty/suppressed!
-        delay = float(cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY))
-        if delay > 0:
-            asyncio.create_task(_delayed_persist(interaction.channel.id, delay))
-        else:
-            trigger_immediate_persist(interaction.channel.id)
+        # Determine if the reply should be ephemeral (Private)
+        is_ephemeral = bool(reply.get("ephemeral", cfg.get("ephemeral_replies", False)))
+
+        if not suppress and reply_content:
+            await interaction.followup.send(content=reply_content[:2000], ephemeral=is_ephemeral)
+        
+        # Strict Persist Hierarchy: command -> panel -> env
+        p_persist = panel_cfg.get("persist", {})
+        if p_persist.get("on_response", PANEL_PERSIST_ON_RESPONSE):
+            panel_delay = float(p_persist.get("response_delay_sec", PANEL_PERSIST_ON_RESPONSE_DELAY))
+            delay = float(cfg.get("action_persist_delay", panel_delay))
+            
+            if delay > 0:
+                asyncio.create_task(_delayed_persist(interaction.channel.id, delay))
+            else:
+                trigger_immediate_persist(interaction.channel.id)
 
     except Exception as e:
         log.error(f"⚠️ Exception triggering button command '{command}': {e}", exc_info=True)
@@ -1160,30 +1241,37 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
         is_success = False
         
     finally:
-        # 4. Update the archived message with final status (✅ or ❌)
+        if animation_task: animation_task.cancel()
+        elapsed_time = time.monotonic() - start_time
+
+        # 4. Update the archived message with final status
         if msg:
             try:
-                status_emoji = PANEL_STATUS_EMOJI_SUCCESS if is_success else PANEL_STATUS_EMOJI_FAIL
+                status_emoji = emoji_success if is_success else emoji_fail
                 kwargs = {}
 
-                # Swap the Embed Title Emoji
-                if current_embed and PANEL_STATUS_EMOJI_IN_EMBED:
-                    if current_embed.title and current_embed.title.endswith(f" {PANEL_STATUS_EMOJI_PENDING}"):
-                        current_embed.title = current_embed.title[:-len(PANEL_STATUS_EMOJI_PENDING)-1]
+                if current_embed and opt_emoji_in_embed_title:
+                    if current_embed.title:
+                        if current_embed.title.endswith(f" {emoji_pending}"):
+                            current_embed.title = current_embed.title[:-len(emoji_pending)-1]
+                        elif current_embed.title.endswith(f" {emoji_pending_alt}"):
+                            current_embed.title = current_embed.title[:-len(emoji_pending_alt)-1]
                     current_embed.title = f"{current_embed.title or ''} {status_emoji}".strip()
                     kwargs["embed"] = current_embed
                     
-                # Swap the Status Line Emoji (fixed matching logic!)
-                if current_content and PANEL_STATUS_LINE and PANEL_STATUS_EMOJI_TITLE:
-                    # Target it exactly as generated, ignoring whether Discord stripped newlines at the start
-                    target = f"{PANEL_STATUS_EMOJI_PENDING} Last:"
-                    if target in current_content:
-                        current_content = current_content.replace(target, f"{status_emoji} Last:")
-                        kwargs["content"] = current_content
+                if current_content and opt_show_status_line:
+                    if opt_emoji_in_status_line:
+                        target = f"{emoji_pending} Last:"
+                        if target in current_content:
+                            current_content = current_content.replace(target, f"{status_emoji} Last:")
+                        
+                    if opt_show_elapsed_time:
+                        current_content += f" ({elapsed_time:.1f}s)"
+                        
+                    kwargs["content"] = current_content
                     
                 if kwargs:
-                    if archived_view:
-                        kwargs["view"] = archived_view
+                    if archived_view: kwargs["view"] = archived_view
                     await msg.edit(**kwargs)
             except Exception as e:
                 log.warning(f"⚠️ Failed to update panel with final success/fail status: {e}")
@@ -1265,6 +1353,7 @@ class DashSelect(discord.ui.Select):
         for i, opt in enumerate(select_cfg.get("options", [])[:25]):
             cmd = opt.get("command")
             args_str = "|".join(opt.get("args", []))
+            # Keep the index 'i' in the value so we can map it back in the callback
             val = f"{i}::{cmd}::{args_str}"
             
             options.append(discord.SelectOption(
@@ -1284,9 +1373,9 @@ class DashSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if not self.values or not interaction.channel: 
             return
-        
 
         parts = self.values[0].split("::")
+        opt_index = int(parts[0])
         command = parts[1]
         args = parts[2].split("|") if parts[2] else []
         
@@ -1298,29 +1387,49 @@ class DashSelect(discord.ui.Select):
             await interaction.response.send_message("⛔ Not allowed for your user.", ephemeral=True)
             return
 
+        # 1. Look up the specific option's original configuration
+        options_list = self.select_cfg.get("options", [])
+        opt_cfg = options_list[opt_index] if opt_index < len(options_list) else {}
+
+        # 2. Check if this option has a modal configured
+        if "modal" in opt_cfg:
+            # Send the modal directly as the initial response (DO NOT DEFER)
+            await interaction.response.send_modal(
+                DashModal(self.panel_name, command, args, opt_cfg["modal"])
+            )
+            
+            if interaction.message:
+                for opt in self.options: 
+                    opt.default = False
+                try:
+                    await interaction.message.edit(view=self.view)
+                except Exception:
+                    pass
+            return
+
+        # 3. If there is no modal, proceed with normal execution (defer & trigger webhook)
         for opt in self.options: 
             opt.default = False
 
         await interaction.response.defer(ephemeral=True)
         await process_panel_action(interaction, self.panel_name, command, args)
 
-
 class DashPanel(discord.ui.View):
     def __init__(self, panel_name: str, panel_cfg: dict, *, disabled: bool = False):
         super().__init__(timeout=None)
         
-        # Enumerate gives us an index (0, 1, 2...) for each button
+        # True if archived OR if the API explicitly disabled the panel in the config
+        is_disabled = disabled or panel_cfg.get("disabled", False)
+        
         for i, btn_cfg in enumerate(panel_cfg.get("buttons") or []):
             b = DashButton(panel_name, btn_cfg, index=i)
-            b.disabled = disabled
+            b.disabled = is_disabled
             self.add_item(b)
             
-        # Enumerate gives us an index (0, 1, 2...) for each dropdown menu
         for i, sel_cfg in enumerate(panel_cfg.get("selects") or []):
             s = DashSelect(panel_name, sel_cfg, index=i)
-            s.disabled = disabled
+            s.disabled = is_disabled
             self.add_item(s)
-
 
 
 async def post_panels():
@@ -1580,9 +1689,7 @@ async def api_dynamic_handler(request: web.Request) -> web.Response:
 
 def create_dynamic_slash_command(cmd_name: str, cmd_cfg: dict):
     
-    # discord.py automatically turns `arguments: str = None` into an optional Slash Command input box!
     async def slash_callback(interaction: discord.Interaction, arguments: str = None):
-        # 1. Check permissions
         if not is_channel_allowed(cmd_name, interaction.channel_id):
             await interaction.response.send_message("⛔ Not allowed in this channel.", ephemeral=True)
             return
@@ -1590,9 +1697,10 @@ def create_dynamic_slash_command(cmd_name: str, cmd_cfg: dict):
             await interaction.response.send_message("⛔ Not allowed for your user.", ephemeral=True)
             return
             
-        await interaction.response.defer(ephemeral=False)
+        # 1. Read the ephemeral config directly from the command!
+        cmd_ephemeral = bool(cmd_cfg.get("ephemeral_replies", False))
+        await interaction.response.defer(ephemeral=cmd_ephemeral)
         
-        # 2. Re-create the payload structure your webhooks expect
         parsed_args = arguments.split() if arguments else []
         raw_input = f"/{cmd_name} {arguments}".strip() if arguments else f"/{cmd_name}"
         
@@ -1607,24 +1715,39 @@ def create_dynamic_slash_command(cmd_name: str, cmd_cfg: dict):
             interaction_id=str(interaction.id),
         )
         
-        # Log the trigger so slash commands aren't silent
         log.info(f"⚡ User '{interaction.user.display_name}' triggered slash command '/{cmd_name}' in channel {interaction.channel_id}")
         
-        # 3. Trigger the webhook
         try:
             data = await post_to_webhook_async(cmd_name, payload)
-            await send_reply(interaction.channel, data)
+            
+            # 2. Parse the reply to check for Webhook overrides or Suppress flags
+            reply = (data or {}).get("reply") or {}
+            if not isinstance(reply, dict):
+                reply = {"content": str(reply)}
+
+            suppress = bool(reply.get("suppress") or reply.get("supress"))
+            content = (reply.get("content") or "").strip()
+            
+            embeds_raw = reply.get("embeds") or []
+            embeds: list[discord.Embed] = []
+            if isinstance(embeds_raw, list):
+                for e in embeds_raw[:10]:
+                    if isinstance(e, dict):
+                        try: embeds.append(discord.Embed.from_dict(e))
+                        except Exception: pass
+            
+            # 3. Allow the Webhook JSON payload to override the config ephemeral state
+            final_ephemeral = bool(reply.get("ephemeral", cmd_ephemeral))
+
+            if not suppress and (content or embeds):
+                # Use interaction.followup to safely send the private Slash reply!
+                await interaction.followup.send(content=content[:2000], embeds=embeds, ephemeral=final_ephemeral)
+                
         except Exception as e:
             await interaction.followup.send(f"⚠️ Trigger failed: {e}", ephemeral=True)
 
-    # Wrap it up as an official Discord App Command
     desc = cmd_cfg.get("description", f"Trigger the {cmd_name} webhook")[:100]
-    cmd = app_commands.Command(
-        name=cmd_name,
-        description=desc,
-        callback=slash_callback
-    )
-    
+    cmd = app_commands.Command(name=cmd_name, description=desc, callback=slash_callback)
     return cmd
 
 # ----------------------------
@@ -1788,6 +1911,10 @@ async def on_message(message: discord.Message):
     )
 
     cfg = _get_cmd_cfg(command)
+    
+    # Check if reactions are disabled for this specific command
+    allow_reactions = cfg.get("reactions_enabled", COMMAND_REACTION_ENABLED)
+
     if cfg.get("accept_attachments") and message.attachments:
         log.info(f"📤 User '{message.author.display_name}' triggered command '{command}' with {len(message.attachments)} file(s)")
         await _fanout_attachments_to_command(message, command, payload)
@@ -1795,19 +1922,21 @@ async def on_message(message: discord.Message):
     
     log.info(f"⚡ User '{message.author.display_name}' triggered command '{command}' in channel {message.channel.id}")
 
-    await _add_reaction_safe(message, COMMAND_REACTION_PENDING)
+    if allow_reactions:
+        await _add_reaction_safe(message, COMMAND_REACTION_PENDING)
 
     try:
         data = await post_to_webhook_async(command, payload)
         
-        await _remove_reaction_safe(message, COMMAND_REACTION_PENDING)
-        if data is not None:
-            await _add_reaction_safe(message, COMMAND_REACTION_SUCCESS)
-        else:
-            await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
-            
+        if allow_reactions:
+            await _remove_reaction_safe(message, COMMAND_REACTION_PENDING)
+            if data is not None:
+                await _add_reaction_safe(message, COMMAND_REACTION_SUCCESS)
+            else:
+                await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
+                
         await send_reply(message.channel, data)
-        
+
         delay = float(cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY))
         if delay > 0:
             asyncio.create_task(_delayed_persist(message.channel.id, delay))
