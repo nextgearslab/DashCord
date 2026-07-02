@@ -1,13 +1,48 @@
 {
   "commands": {
     "ping": {
-      "endpoint": "https://hook.us1.make.com/your-webhook-id",
-      "method": "POST"
+      "endpoint": "https://httpbin.org/post",
+      "method": "POST",
+      "description": "Ping the HTTPBin API to test response templating",
+      "body_template": {
+        "params": {
+          "message": "PONG!",
+          "user": "{{discord.user_name}}"
+        }
+      },
+      "response_template": {
+        "reply": {
+          "content": "🎯 **API Ping Success!**\n\n**🌍 Origin IP:** `{{origin}}`\n**🤖 User-Agent:** `{{headers.User-Agent}}`\n**💬 Echoed Message:** `{{json.params.message}}`"
+        }
+      }
     },
     "uptime": {
       "endpoint": "https://your-api.com/system-uptime",
       "method": "GET",
-      "description": "Quickly check the operational status of the server"
+      "description": "Quickly check the operational status of the server",
+      "response_template": {
+        "reply": {
+          "embeds": [
+            {
+              "title": "🖥️ Server Status ({{hostname}})",
+              "description": "System is currently **{{status}}**",
+              "color": 65280,
+              "fields": [
+                {
+                  "name": "Uptime",
+                  "value": "`{{uptime_days}} days`",
+                  "inline": true
+                },
+                {
+                  "name": "CPU Usage",
+                  "value": "`{{metrics.cpu}}%`",
+                  "inline": true
+                }
+              ]
+            }
+          ]
+        }
+      }
     },
     "ultra-orchestrator": {
       "endpoint": "https://n8n.yourdomain.com/webhook/ultra-orchestrator",

@@ -442,32 +442,32 @@ async def _ingest_specific_attachment(att: discord.Attachment, command: str, pay
     return (True, "")
 
 
-def _render_body_template(tpl: Any, payload: dict) -> Any:
+def _render_template(tpl: Any, context: dict) -> Any:
     """
     Replace {{...}} placeholders inside strings, recursively.
-    Supports {{raw}}, {{command}}, {{args}}, {{discord.channel_id}}, etc.
+    Supports dot-path lookups like {{data.0.logs}}
     """
     if isinstance(tpl, str):
         def repl(m: re.Match) -> str:
-            key = m.group(1)
-            # dot-path lookup in payload
-            cur: Any = payload
+            key = m.group(1).strip()
+            cur: Any = context
             for part in key.split("."):
                 if isinstance(cur, dict) and part in cur:
                     cur = cur[part]
                 elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
                     cur = cur[int(part)]
                 else:
-                    _dbg("⚠️ Placeholder lookup: key '%s' not found in payload context.", key)
+                    _dbg("⚠️ Placeholder lookup: key '%s' not found in context.", key)
                     cur = ""
                     break
             return str(cur)
-        return PLACEHOLDER_RE.sub(repl, tpl)
+        # Using inline regex compilation for safety
+        return re.sub(r"\{\{(.+?)\}\}", repl, tpl)
 
     elif isinstance(tpl, dict):
-        return {k: _render_body_template(v, payload) for k, v in tpl.items()}
+        return {k: _render_template(v, context) for k, v in tpl.items()}
     elif isinstance(tpl, list):
-        return [_render_body_template(item, payload) for item in tpl]
+        return [_render_template(item, context) for item in tpl]
     else:
         return tpl
     
@@ -787,7 +787,7 @@ async def post_to_webhook_async(command: str, payload: dict) -> dict:
     body_template = cfg.get("body_template")
     out_json = payload
     if body_template is not None:
-        out_json = _render_body_template(body_template, payload)
+        out_json = _render_template(body_template, payload)
 
     headers = {"Content-Type": "application/json"}
     
@@ -803,19 +803,36 @@ async def post_to_webhook_async(command: str, payload: dict) -> dict:
         _dbg("WEBHOOK POST cmd=%s status=%s", command, status)
 
         if DEBUG_WEBHOOK:
-            preview = text[:800].replace("\n", "\\n")
+            # Safely attempt to beautify JSON for the console
+            try:
+                parsed_json = json.loads(text)
+                preview = json.dumps(parsed_json, indent=2)
+                if len(preview) > 1500:
+                    preview = preview[:1500] + "\n... (truncated)"
+            except Exception:
+                # Fallback to raw string if it's not valid JSON (e.g. HTML errors)
+                preview = text[:800].replace("\n", "\\n")
+
             log.info(
                 "\n================ WEBHOOK RESPONSE ================\n"
                 f"command: {command}\n"
                 f"endpoint: {endpoint}\n"
                 f"status: {status}\n"
                 f"content-type: {resp_headers.get('Content-Type')}\n"
-                f"text_preview: {preview}\n"
+                f"text_preview:\n{preview}\n"
                 "=================================================="
             )
 
         try:
             data = json.loads(text)
+            
+            # If the user defines a response_template, map the raw API JSON to DashCord's format
+            resp_tpl = cfg.get("response_template")
+            if resp_tpl:
+                # Wrap lists in a dict so dot-notation works (e.g., {{root.0.name}})
+                context = data if isinstance(data, dict) else {"root": data}
+                data = _render_template(resp_tpl, context)
+
         except Exception as e:
             if 200 <= status < 300 and text.strip():
                 log.warning(f"⚠️ Webhook response for '{command}' returned HTTP {status} but was not valid JSON. Falling back to plain text reply.")
