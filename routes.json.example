@@ -54,6 +54,10 @@
       "ephemeral_replies": true,
       "reactions_enabled": false,
       "action_persist_delay": 3.5,
+      "reply_to_message": true,
+      "loading_message": true,
+      "loading_text": "⚙️ Executing Orchestrator for `{command}`...",
+      "show_elapsed_time": true,
       "api_protected": false,
       "api_writable": true,
       "accept_attachments": true,
@@ -64,6 +68,7 @@
         "X-Client-Source": "DashCord-Headless"
       },
       "attachment_rules": {
+        "fanout": true,
         "extensions": [".json", ".txt", ".csv", ".wav"],
         "max_bytes": 5000000,
         "require_json": false
@@ -86,6 +91,8 @@
           "user_id": "{{discord.user_id}}",
           "user_display": "{{discord.user_display}}",
           "user_handle": "{{discord.user_name}}",
+          "user_role_ids": "{{discord.user_roles}}",
+          "user_role_names": "{{discord.user_role_names}}",
           "guild_id": "{{discord.guild_id}}",
           "guild_name": "{{discord.guild_name}}",
           "channel_id": "{{discord.channel_id}}",
@@ -112,6 +119,23 @@
           "dry_run": false,
           "bypass_cache": true
         }
+      }
+    },
+    "batch-upload": {
+      "endpoint": "https://n8n.yourdomain.com/webhook/batch-files",
+      "method": "POST",
+      "description": "Ingest multiple files in a single batch webhook payload",
+      "accept_attachments": true,
+      "allow_without_command": true,
+      "attachment_rules": {
+        "fanout": false,
+        "extensions": [".json", ".csv", ".txt", ".png", ".jpg"],
+        "max_bytes": 10000000,
+        "require_json": false
+      },
+      "attachment_reply": {
+        "mode": "errors",
+        "error_template": "❌ Batch ingestion rejected ({bad}/{total}) files:\n{errors}"
       }
     },
     "stealth-query": {
@@ -187,6 +211,8 @@
         "emoji_in_embed_title": true,
         "animate_pending_emoji": true,
         "animate_elapsed_time": true,
+        "show_loading_message": false,
+        "append_status_to_reply": false,
         "emojis": {
           "pending": "⏳",
           "pending_alt": "⌛",
