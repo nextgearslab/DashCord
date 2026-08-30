@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import asyncio
-import traceback
 
 import base64
 import re
@@ -29,6 +28,13 @@ BOT_STARTED_AT_UTC = datetime.now(timezone.utc)  # module load time (safe defaul
 def get_env_bool(key: str, default: str = "false") -> bool:
     """Helper to parse boolean environment variables."""
     return os.getenv(key, default).strip().lower() in ("1", "true", "yes", "y", "on")
+
+def parse_bool(val: Any, default: bool = False) -> bool:
+    """Helper to parse mixed bool/string values from JSON or configs."""
+    if val is None: return default
+    if isinstance(val, bool): return val
+    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
+
 
 DASHCORD_DEBUG = get_env_bool("DASHCORD_DEBUG", "false") 
 
@@ -73,13 +79,17 @@ DISPLAY_UNKNOWN_COMMAND_ERROR_SILENT_CHANNELS = set(
 )
 
 # 🎭 Chat Command Reactions (⏳, ✅, ❌ on typed user messages)
-COMMAND_REACTION_ENABLED = get_env_bool("COMMAND_REACTION_ENABLED", "true")
-COMMAND_REACTION_PENDING = os.getenv("COMMAND_REACTION_PENDING", "⏳")
-COMMAND_REACTION_SUCCESS = os.getenv("COMMAND_REACTION_SUCCESS", "✅")
-COMMAND_REACTION_FAIL    = os.getenv("COMMAND_REACTION_FAIL", "❌")
+COMMAND_REACTION_ENABLED        = get_env_bool("COMMAND_REACTION_ENABLED", "true")
+COMMAND_REACTION_PENDING        = os.getenv("COMMAND_REACTION_PENDING", "⏳")
+COMMAND_REACTION_SUCCESS        = os.getenv("COMMAND_REACTION_SUCCESS", "✅")
+COMMAND_REACTION_FAIL           = os.getenv("COMMAND_REACTION_FAIL", "❌")
+COMMAND_LOADING_MESSAGE_ENABLED = get_env_bool("COMMAND_LOADING_MESSAGE_ENABLED", "false")
+COMMAND_LOADING_MESSAGE_TEXT    = os.getenv("COMMAND_LOADING_MESSAGE_TEXT", "⏳ Processing `{command}`...")
+COMMAND_SHOW_ELAPSED_TIME       = get_env_bool("COMMAND_SHOW_ELAPSED_TIME", "false")
+COMMAND_REPLY_TO_MESSAGE        = get_env_bool("COMMAND_REPLY_TO_MESSAGE", "true")
 
 # 🎛️ Panel Interaction & Behavior Baselines
-PANEL_SHOW_TITLE_DEFAULT      = get_env_bool("PANEL_SHOW_TITLE_DEFAULT", "true")
+PANEL_SHOW_TITLE_DEFAULT       = get_env_bool("PANEL_SHOW_TITLE_DEFAULT", "true")
 PANEL_REPOST_ON_STARTUP        = get_env_bool("PANEL_REPOST_ON_STARTUP", "true")
 PANEL_SPAWN_NEW_ON_CLICK       = get_env_bool("PANEL_SPAWN_NEW_ON_CLICK", "true")
 PANEL_ARCHIVE_DISABLE_BUTTONS  = get_env_bool("PANEL_ARCHIVE_DISABLE_BUTTONS", "true")
@@ -122,7 +132,6 @@ HTTP_TIMEOUT_SECONDS   = float(os.getenv("HTTP_TIMEOUT_SECONDS", "20"))
 VERIFY_TLS             = get_env_bool("VERIFY_TLS", "true")
 
 # 🐞 Troubleshooting & Logging Controls
-DASHCORD_DEBUG = get_env_bool("DASHCORD_DEBUG", "false")
 DEBUG_WEBHOOK  = get_env_bool("DEBUG_WEBHOOK", "false")
 
 # channel_id -> { panel_name -> message_id }
@@ -130,6 +139,8 @@ PANEL_STATE: dict[str, dict[str, str]] = {}
 
 # channel_id -> { panel_name -> active_message_id }
 PANEL_ACTIVE: dict[str, dict[str, str]] = {}
+
+AIOHTTP_SESSION: aiohttp.ClientSession | None = None
 
 
 # ----------------------------
@@ -161,7 +172,7 @@ else:
 
 # Merged active states
 COMMANDS = {**STATIC_COMMANDS, **DYNAMIC_COMMANDS}
-PANELS = {**STATIC_PANELS, **DYNAMIC_PANELS}
+PANELS   = {**STATIC_PANELS, **DYNAMIC_PANELS}
 
 def _save_dynamic_routes():
     try:
@@ -179,6 +190,176 @@ log.info(f"BOOT routes={ROUTES_PATH} prefix={COMMAND_PREFIX!r} cmds={sorted(COMM
 # ----------------------------
 # HELPERS
 # ----------------------------
+
+async def _send_chunked(sender_func, content: str, fallback_sender_func=None, **kwargs):
+    """Helper to split >2000 char messages cleanly at newlines/spaces, preserving codeblocks and leading spaces."""
+    if not content:
+        if kwargs:
+            await sender_func(content=None, **kwargs)
+        return
+
+    MAX_LEN = 1900
+    chunks = []
+    current_chunk = ""
+    in_code_block = False
+    code_block_lang = ""
+
+    def get_ending_state(s, start_state, start_lang):
+        state = start_state
+        lang = start_lang
+        for line in s.split('\n'):
+            t_line = line.lstrip()
+            if t_line.startswith("```"):
+                if state:
+                    state = False
+                    lang = ""
+                else:
+                    state = True
+                    lang = t_line[3:].strip()
+        return state, lang
+
+    sections = content.split('\n\n')
+
+    for i, section in enumerate(sections):
+        will_be_in_cb, new_lang = get_ending_state(section, in_code_block, code_block_lang)
+        closing_allowance = 4 if will_be_in_cb else 0
+        separator_len = 2 if current_chunk else 0
+
+        if len(current_chunk) + separator_len + len(section) + closing_allowance <= MAX_LEN:
+            if current_chunk:
+                current_chunk += '\n\n' + section
+            else:
+                if in_code_block and not section.lstrip().startswith("```"):
+                    current_chunk = f"```{code_block_lang}\n{section}"
+                else:
+                    current_chunk = section
+            in_code_block = will_be_in_cb
+            code_block_lang = new_lang
+        else:
+            # If the section doesn't fit in the CURRENT message, but IT DOES fit in a BRAND NEW message
+            prefix_for_new = f"```{code_block_lang}\n" if (in_code_block and not section.lstrip().startswith("```")) else ""
+            
+            if len(prefix_for_new) + len(section) + closing_allowance <= MAX_LEN:
+                if current_chunk:
+                    if in_code_block:
+                        current_chunk = current_chunk.rstrip() + "\n```"
+                    chunks.append(current_chunk.lstrip('\n').rstrip() + '\n\u200b')
+                current_chunk = prefix_for_new + section
+                in_code_block = will_be_in_cb
+                code_block_lang = new_lang
+            else:
+                # If the block ITSELF is > MAX_LEN chars, fall back to line-by-line chopping.
+                lines = section.split('\n')
+                for j, line in enumerate(lines):
+                    t_line = line.lstrip()
+                    is_toggle = t_line.startswith("```")
+
+                    line_will_be_in_cb = in_code_block
+                    line_new_lang = code_block_lang
+
+                    if is_toggle:
+                        if in_code_block:
+                            line_will_be_in_cb = False
+                            line_new_lang = ""
+                        else:
+                            line_will_be_in_cb = True
+                            line_new_lang = t_line[3:].strip()
+
+                    line_closing_allowance = 4 if line_will_be_in_cb else 0
+                    line_sep = ('\n\n' if j == 0 else '\n') if current_chunk else ''
+                    line_sep_len = len(line_sep)
+
+                    if len(current_chunk) + line_sep_len + len(line) + line_closing_allowance <= MAX_LEN:
+                        if current_chunk:
+                            current_chunk += line_sep + line
+                        else:
+                            if in_code_block and not is_toggle:
+                                current_chunk = f"```{code_block_lang}\n{line}"
+                            elif in_code_block and is_toggle and t_line.rstrip() == "```":
+                                current_chunk = ""
+                            else:
+                                current_chunk = line
+                        in_code_block = line_will_be_in_cb
+                        code_block_lang = line_new_lang
+                    else:
+                        if current_chunk:
+                            if in_code_block:
+                                current_chunk = current_chunk.rstrip() + "\n```"
+                            chunks.append(current_chunk.lstrip('\n').rstrip() + '\n\u200b')
+                            current_chunk = ""
+
+                        if len(line) + line_closing_allowance <= MAX_LEN:
+                            if in_code_block and not is_toggle:
+                                current_chunk = f"```{code_block_lang}\n{line}"
+                            elif in_code_block and is_toggle and t_line.rstrip() == "```":
+                                current_chunk = ""
+                            else:
+                                current_chunk = line
+                            in_code_block = line_will_be_in_cb
+                            code_block_lang = line_new_lang
+                        else:
+                            remaining_line = line
+                            prefix = f"```{code_block_lang}\n" if (in_code_block and not is_toggle) else ""
+
+                            while len(remaining_line) > 0:
+                                allowance = 4 if line_will_be_in_cb else 0
+                                space_left = MAX_LEN - len(prefix) - allowance - 1
+                                if space_left <= 0: space_left = 1
+
+                                part = remaining_line[:space_left]
+                                remaining_line = remaining_line[space_left:]
+
+                                if len(remaining_line) > 0:
+                                    chunk_to_push = prefix + part
+                                    if line_will_be_in_cb: chunk_to_push += "\n```"
+                                    chunks.append(chunk_to_push.lstrip('\n').rstrip() + '\n\u200b')
+                                    prefix = f"```{line_new_lang}\n" if line_will_be_in_cb else ""
+                                else:
+                                    current_chunk = prefix + part
+
+                            in_code_block = line_will_be_in_cb
+                            code_block_lang = line_new_lang
+
+    if current_chunk:
+        if in_code_block and not current_chunk.rstrip().endswith("```"):
+            current_chunk = current_chunk.rstrip() + "\n```"
+        chunks.append(current_chunk.lstrip('\n').rstrip())
+
+    # If the chunk begins with whitespace, prepend a zero-width space so Discord doesn't strip it.
+    final_chunks = []
+    for chunk in chunks:
+        if chunk.startswith((" ", "\t")):
+            chunk = '\u200B' + chunk
+        final_chunks.append(chunk)
+
+    for i, chunk in enumerate(final_chunks):
+        is_last = (i == len(final_chunks) - 1)
+        
+        # Only pass embeds, views, and non-ephemeral kwargs to the final chunk
+        passthrough = {}
+        for k, v in kwargs.items():
+            if is_last or k == "ephemeral":
+                passthrough[k] = v
+
+        current_sender = sender_func
+        
+        # For chunk 2+, if a fallback is provided and the message is NOT ephemeral, route as standard message
+        # (Ephemeral messages MUST be sent via interaction followups)
+        if i > 0 and fallback_sender_func and not kwargs.get("ephemeral"):
+            current_sender = fallback_sender_func
+            passthrough.pop("ephemeral", None) # Standard channel.send doesn't accept ephemeral argument
+
+        try:
+            await current_sender(content=chunk, **passthrough)
+        except discord.Forbidden:
+            # If standard channel.send fails due to permission locks, silently fallback to interaction webhook
+            if current_sender != sender_func:
+                if "ephemeral" in kwargs:
+                    passthrough["ephemeral"] = kwargs["ephemeral"]
+                await sender_func(content=chunk, **passthrough)
+            else:
+                _dbg("Forbidden error sending chunk %d", i)
+
 
 async def _add_reaction_safe(message: discord.Message, emoji: str) -> None:
     if not COMMAND_REACTION_ENABLED:
@@ -239,7 +420,10 @@ def _is_one_or_many_json_objects(text: str) -> bool:
             i += 1
         if i >= n:
             break
-        obj, end = dec.raw_decode(text, i)  # can throw
+        try:
+            obj, end = dec.raw_decode(text, i)
+        except Exception:
+            return False
         if not isinstance(obj, dict):
             return False
         found += 1
@@ -263,6 +447,9 @@ async def _fanout_attachments_to_command(message: discord.Message, command: str,
     cfg = _get_cmd_cfg(command)
     rules = cfg.get("attachment_rules") or {}
     exts = rules.get("extensions") or []
+    
+    fanout = rules.get("fanout", True)
+    
     atts = _find_matching_attachments(message, exts)
 
     if not atts:
@@ -275,41 +462,92 @@ async def _fanout_attachments_to_command(message: discord.Message, command: str,
 
     await _add_reaction_safe(message, COMMAND_REACTION_PENDING)
 
+    total = len(atts)
     ok = 0
     bad = 0
     bad_lines: list[str] = []
-    total = len(atts)
 
-    log.info(f"📤 Ingesting file batch: starting fan-out for {total} file(s) on command '{command}'...")
+    if fanout:
+        # ==========================================
+        # FAN-OUT (1 webhook per file)
+        # ==========================================
+        log.info(f"📤 Ingesting file batch: starting fan-out for {total} file(s) on command '{command}'...")
 
-    for index, att in enumerate(atts, start=1):
-        p = _clone_payload(base_payload)
-        handled, err = await _ingest_specific_attachment(att, command, p)
-        if handled and err:
-            bad += 1
-            bad_lines.append(err)
-            log.warning(f"⚠️ [{index}/{total}] Attachment '{att.filename}' rejected: {err}")
-            continue
-
-        try:
-            _dbg("Webhook call start cmd=%s att=%s", command, att.filename)
-            data = await post_to_webhook_async(command, p)
-            _dbg("Webhook call end cmd=%s att=%s", command, att.filename)
-
-            if (data or {}).get("ok"):
-                ok += 1
-                _dbg("[%d/%d] Attachment '%s' processed successfully by webhook.", index, total, att.filename)
-            else:
+        for index, att in enumerate(atts, start=1):
+            p = _clone_payload(base_payload)
+            handled, err = await _ingest_specific_attachment(att, command, p)
+            if handled and err:
                 bad += 1
-                msg = ((data or {}).get("reply") or {}).get("content") or "unknown error"
-                bad_lines.append(f"❌ `{att.filename}`: {msg[:200]}")
-                log.warning(f"⚠️ [{index}/{total}] Webhook rejected file '{att.filename}': {msg[:100]}")
-        except Exception as e:
-            bad += 1
-            bad_lines.append(f"❌ `{att.filename}`: {type(e).__name__}: {e}")
-            log.error(f"⚠️ [{index}/{total}] Failed to post file '{att.filename}': {e}", exc_info=True)
+                bad_lines.append(err)
+                log.warning(f"⚠️ [{index}/{total}] Attachment '{att.filename}' rejected: {err}")
+                continue
 
-    log.info(f"📤 File batch complete for command '{command}': {ok} succeeded, {bad} failed.")
+            try:
+                _dbg("Webhook call start cmd=%s att=%s", command, att.filename)
+                data = await post_to_webhook_async(command, p)
+                _dbg("Webhook call end cmd=%s att=%s", command, att.filename)
+
+                if (data or {}).get("ok"):
+                    ok += 1
+                    _dbg("[%d/%d] Attachment '%s' processed successfully by webhook.", index, total, att.filename)
+                else:
+                    bad += 1
+                    msg = ((data or {}).get("reply") or {}).get("content") or "unknown error"
+                    bad_lines.append(f"❌ `{att.filename}`: {msg[:200]}")
+                    log.warning(f"⚠️ [{index}/{total}] Webhook rejected file '{att.filename}': {msg[:100]}")
+            except Exception as e:
+                bad += 1
+                bad_lines.append(f"❌ `{att.filename}`: {type(e).__name__}: {e}")
+                log.error(f"⚠️ [{index}/{total}] Failed to post file '{att.filename}': {e}", exc_info=True)
+
+        log.info(f"📤 File batch complete for command '{command}': {ok} succeeded, {bad} failed.")
+
+    else:
+        # ==========================================
+        # BATCH (All files in 1 webhook)
+        # ==========================================
+        log.info(f"📤 Ingesting file batch: sending {total} file(s) as a single payload for command '{command}'...")
+        
+        p = _clone_payload(base_payload)
+        p["attachments"] = [] # Create an array for our files
+        
+        ok_ingest = 0
+        for index, att in enumerate(atts, start=1):
+            # Use a temporary dict so _ingest_specific_attachment doesn't overwrite root keys
+            temp_p = {"discord": p.get("discord", {})}
+            handled, err = await _ingest_specific_attachment(att, command, temp_p)
+            
+            if handled and err:
+                bad += 1
+                bad_lines.append(err)
+                log.warning(f"⚠️ [{index}/{total}] Attachment '{att.filename}' rejected: {err}")
+                continue
+                
+            # Append the extracted metadata to our batch array
+            p["attachments"].append({
+                "attachment": temp_p.get("attachment"),
+                "attachment_text": temp_p.get("attachment_text"),
+                "attachment_bytes_len": temp_p.get("attachment_bytes_len"),
+                "attachment_b64": temp_p.get("attachment_b64"),
+                "source_meta_b64": temp_p.get("source_meta_b64")
+            })
+            ok_ingest += 1
+
+        if ok_ingest > 0:
+            try:
+                data = await post_to_webhook_async(command, p)
+                if (data or {}).get("ok"):
+                    ok = total # Mark all ingested files as successful
+                else:
+                    bad += ok_ingest # Mark all as failed if the webhook rejects the batch
+                    msg = ((data or {}).get("reply") or {}).get("content") or "unknown error"
+                    bad_lines.append(f"❌ Webhook batch rejection: {msg[:200]}")
+            except Exception as e:
+                bad += ok_ingest
+                bad_lines.append(f"❌ Webhook batch exception: {type(e).__name__}: {e}")
+                log.error(f"⚠️ Failed to post batch payload: {e}", exc_info=True)
+
+        log.info(f"📤 Batch payload complete for command '{command}': {ok} files processed, {bad} failed.")
 
     # ----------------------------
     # routes-driven attachment reply policy
@@ -349,8 +587,7 @@ async def _fanout_attachments_to_command(message: discord.Message, command: str,
 
     msg = (msg or "").strip()
     if msg:
-        await message.reply(msg[:2000])
-
+        await _send_chunked(message.reply, msg, fallback_sender_func=message.channel.send)
 
 def _commands_allowing_upload_only() -> list[str]:
     out =[]
@@ -365,7 +602,9 @@ def _is_upload_only_message(message: discord.Message) -> bool:
 
 
 def _get_cmd_cfg(command: str) -> dict:
-    cfg = COMMANDS.get(command) or {}
+    if not command:
+        return {}
+    cfg = COMMANDS.get(command) or COMMANDS.get(command.lower()) or {}
     return cfg if isinstance(cfg, dict) else {}
 
 def _find_matching_attachments(message: discord.Message, exts: list[str]) -> list[discord.Attachment]:
@@ -445,9 +684,26 @@ async def _ingest_specific_attachment(att: discord.Attachment, command: str, pay
 def _render_template(tpl: Any, context: dict) -> Any:
     """
     Replace {{...}} placeholders inside strings, recursively.
-    Supports dot-path lookups like {{data.0.logs}}
+    Supports dot-path lookups like {{data.0.logs}} and preserves native types for exact matches.
     """
     if isinstance(tpl, str):
+        # If the string is EXACTLY a single placeholder (e.g. "{{discord.user_roles}}"), preserve native data type
+        exact_match = re.fullmatch(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}", tpl)
+        if exact_match:
+            key = exact_match.group(1).strip()
+            cur: Any = context
+            found = True
+            for part in key.split("."):
+                if isinstance(cur, dict) and part in cur:
+                    cur = cur[part]
+                elif isinstance(cur, list) and part.isdigit() and int(part) < len(cur):
+                    cur = cur[int(part)]
+                else:
+                    found = False
+                    break
+            if found:
+                return cur
+
         def repl(m: re.Match) -> str:
             key = m.group(1).strip()
             cur: Any = context
@@ -460,8 +716,10 @@ def _render_template(tpl: Any, context: dict) -> Any:
                     _dbg("⚠️ Placeholder lookup: key '%s' not found in context.", key)
                     cur = ""
                     break
+            if isinstance(cur, (dict, list)):
+                return json.dumps(cur, ensure_ascii=False)
             return str(cur)
-        # Using inline regex compilation for safety
+
         return re.sub(r"\{\{(.+?)\}\}", repl, tpl)
 
     elif isinstance(tpl, dict):
@@ -693,7 +951,7 @@ def now_local_iso() -> str:
         return datetime.now().isoformat()
 
 def resolve_endpoint(command: str) -> str:
-    cfg = COMMANDS.get(command)
+    cfg = _get_cmd_cfg(command)
     if not cfg:
         raise RuntimeError(f"No command configured: {command}")
 
@@ -713,7 +971,8 @@ def _as_int_set(values) -> set[int]:
     return out
 
 def is_user_allowed(command: str, user_id: int, silent: bool = False) -> bool:
-    allowed = (COMMANDS.get(command, {}) or {}).get("allowed_users",[])
+    cfg = _get_cmd_cfg(command)
+    allowed = cfg.get("allowed_users", [])
     allowed_set = _as_int_set(allowed)
     ok = (len(allowed_set) == 0) or (int(user_id) in allowed_set)
 
@@ -731,7 +990,8 @@ def is_user_allowed(command: str, user_id: int, silent: bool = False) -> bool:
     return ok
 
 def is_channel_allowed(command: str, channel_id: int, silent: bool = False) -> bool:
-    allowed = (COMMANDS.get(command, {}) or {}).get("allowed_channels",[])
+    cfg = _get_cmd_cfg(command)
+    allowed = cfg.get("allowed_channels", [])
     allowed_set = _as_int_set(allowed)
     ok = (len(allowed_set) == 0) or (int(channel_id) in allowed_set)
 
@@ -766,6 +1026,8 @@ def build_payload(*, event_type, command, args, raw, guild, channel, user, messa
             "user_id": str(user.id),
             "user_name": getattr(user, "name", None),
             "user_display": getattr(user, "display_name", None),
+            "user_roles": [str(r.id) for r in getattr(user, "roles", []) if r.name != "@everyone"],
+            "user_role_names": [r.name for r in getattr(user, "roles", []) if r.name != "@everyone"],
             "message_id": str(message_id) if message_id else None,
             "interaction_id": interaction_id,
         },
@@ -773,7 +1035,7 @@ def build_payload(*, event_type, command, args, raw, guild, channel, user, messa
     }
 
 def _resolve_method(command: str) -> str:
-    cfg = COMMANDS.get(command) or {}
+    cfg = _get_cmd_cfg(command)
     m = (cfg.get("method") or "POST").strip().upper()
     if m not in ("POST", "GET"):
         raise RuntimeError(f"Invalid method for command '{command}': {m!r} (use POST or GET)")
@@ -790,8 +1052,21 @@ async def post_to_webhook_async(command: str, payload: dict) -> dict:
         out_json = _render_template(body_template, payload)
 
     headers = {"Content-Type": "application/json"}
-    
-    if DASHCORD_SHARED_SECRET:
+
+    # Dynamically inject User-Specific API Token if available
+    discord_user_id = (payload.get("discord") or {}).get("user_id")
+    user_token = None
+    if discord_user_id:
+        user_token = os.getenv(f"USER_TOKEN_{discord_user_id}")
+
+    if user_token:
+        headers["Authorization"] = f"Bearer {user_token}"
+        log.info(f"🔑 Dynamically injected Personal API Key for Discord ID: {discord_user_id}")
+        
+        # Preserving X-DashCord-Token for internal legacy/n8n dependencies
+        if DASHCORD_SHARED_SECRET:
+            headers["X-DashCord-Token"] = DASHCORD_SHARED_SECRET
+    elif DASHCORD_SHARED_SECRET:
         headers["X-DashCord-Token"] = DASHCORD_SHARED_SECRET
 
     custom_headers = cfg.get("headers")
@@ -803,15 +1078,12 @@ async def post_to_webhook_async(command: str, payload: dict) -> dict:
         _dbg("WEBHOOK POST cmd=%s status=%s", command, status)
 
         if DEBUG_WEBHOOK:
-            # Safely attempt to beautify JSON for the console
             try:
                 parsed_json = json.loads(text)
                 preview = json.dumps(parsed_json, indent=2)
-                if len(preview) > 1500:
-                    preview = preview[:1500] + "\n... (truncated)"
             except Exception:
-                # Fallback to raw string if it's not valid JSON (e.g. HTML errors)
-                preview = text[:800].replace("\n", "\\n")
+                # Provide the full raw string, no truncation
+                preview = text
 
             log.info(
                 "\n================ WEBHOOK RESPONSE ================\n"
@@ -826,10 +1098,8 @@ async def post_to_webhook_async(command: str, payload: dict) -> dict:
         try:
             data = json.loads(text)
             
-            # If the user defines a response_template, map the raw API JSON to DashCord's format
             resp_tpl = cfg.get("response_template")
             if resp_tpl:
-                # Wrap lists in a dict so dot-notation works (e.g., {{root.0.name}})
                 context = data if isinstance(data, dict) else {"root": data}
                 data = _render_template(resp_tpl, context)
 
@@ -838,28 +1108,24 @@ async def post_to_webhook_async(command: str, payload: dict) -> dict:
                 log.warning(f"⚠️ Webhook response for '{command}' returned HTTP {status} but was not valid JSON. Falling back to plain text reply.")
             data = None
 
-        # If endpoint responds with an "items array", unwrap item 0
         if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
             data = data[0]
 
-        # If endpoint wrapped the real payload under { "response": {...} }, unwrap it
         if isinstance(data, dict) and isinstance(data.get("response"), dict):
             data = data["response"]
 
-        # If still not a dict, fall back to raw text
         if not isinstance(data, dict):
             data = {"ok": (200 <= status < 300), "reply": {"content": text}}
 
-        # Normalize error responses
+        # Normalize error responses (Removed truncation here as well)
         if not (200 <= status < 300):
-            log.warning(f"❌ Webhook Error [{command}]: HTTP {status} - {text[:200]}")
+            log.warning(f"❌ Webhook Error [{command}]: HTTP {status} - {text}")
             data["ok"] = False
             data.setdefault("reply", {})
             if not isinstance(data["reply"], dict):
                 data["reply"] = {"content": str(data["reply"])}
-            data["reply"].setdefault("content", f"Webhook HTTP {status}: {text[:800]}")
+            data["reply"].setdefault("content", f"Webhook HTTP {status}: {text}")
 
-        # Normalize reply shape
         data.setdefault("reply", {})
         if not isinstance(data["reply"], dict):
             data["reply"] = {"content": str(data["reply"])}
@@ -869,14 +1135,13 @@ async def post_to_webhook_async(command: str, payload: dict) -> dict:
             if stdout_str:
                 data["reply"]["content"] = f"```\n{stdout_str}\n```"
                 
-        # ---- DEBUG PARSED ----
         if DEBUG_WEBHOOK:
             reply_obj = data.get("reply")
             is_dict = isinstance(reply_obj, dict)
             reply_keys = list(reply_obj.keys()) if is_dict else None
             c = reply_obj.get("content") if is_dict else None
             c_len = len(c) if isinstance(c, str) else None
-            c_preview = c[:200].replace("\n", "\\n") if isinstance(c, str) else None
+            c_preview = c.replace("\n", "\\n") if isinstance(c, str) else None # Removed truncation
 
             log.info(
                 "\n================ WEBHOOK PARSED ================\n"
@@ -940,7 +1205,7 @@ async def send_reply(channel: discord.abc.Messageable, data: dict) -> None:
         reply = {"content": str(reply)}
 
     # honor suppress flag (support both spellings)
-    suppress = bool(reply.get("suppress") or reply.get("supress"))
+    suppress = parse_bool(reply.get("suppress") or reply.get("supress"))
     content = (reply.get("content") or "").strip()
     embeds_raw = reply.get("embeds") or []
 
@@ -957,7 +1222,7 @@ async def send_reply(channel: discord.abc.Messageable, data: dict) -> None:
     if suppress or (not content and not embeds):
         return
 
-    await channel.send(content=content[:2000], embeds=embeds)
+    await _send_chunked(channel.send, content, embeds=embeds)
 
 # ----------------------------
 # DISCORD SETUP
@@ -1086,11 +1351,11 @@ async def _animate_pending_message(msg: discord.Message, base_content: str | Non
                         title = title[:-len(emoji2)-1]
                     anim_embed.title = f"{title} {current_emoji}".strip()
 
-            # 2. Handle Live Elapsed Time Animation
-            if opts.get("show_elapsed_time") and opts.get("animate_elapsed_time"):
-                if anim_content and opts.get("show_status_line"):
-                    elapsed = time.monotonic() - start_time
-                    anim_content += f" ({elapsed:.1f}s)"
+                # 2. Handle Live Elapsed Time Animation
+                if opts.get("show_elapsed_time") and opts.get("animate_elapsed_time"):
+                    if anim_content and opts.get("show_status_line") and "Last:" in anim_content:
+                        elapsed = time.monotonic() - start_time
+                        anim_content += f" ({elapsed:.1f}s)"
 
             # 3. Fire the Edit Request to Discord
             try:
@@ -1106,6 +1371,26 @@ async def _animate_pending_message(msg: discord.Message, base_content: str | Non
         pass
     except Exception as e:
         log.warning(f"⚠️ Animation task encountered an error: {e}")
+
+async def _animate_text_loading(msg: discord.Message, base_text: str, start_time: float):
+    """Animates a temporary chat loading message by ticking up the elapsed time."""
+    try:
+        while True:
+            await asyncio.sleep(PANEL_STATUS_ANIMATE_INTERVAL)
+            elapsed = time.monotonic() - start_time
+            new_text = f"{base_text} ({elapsed:.1f}s)"
+            try:
+                await msg.edit(content=new_text)
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    retry_after = float(e.response.headers.get("Retry-After", PANEL_STATUS_ANIMATE_INTERVAL + 1))
+                    await asyncio.sleep(retry_after)
+                else:
+                    break
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        log.error(f"⚠️ Animation loop error: {e}")
 
 async def process_panel_action(interaction: discord.Interaction, panel_name: str, command: str, args: list, modal_data: dict = None):
     """Shared execution logic for Buttons, Selects, and Modals."""
@@ -1136,26 +1421,33 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
     # ====================================================================
     # MAX CONFIGURATION RESOLUTION (Panel Config overrides ENV Globals)
     # ====================================================================
-    panel_cfg = PANELS.get(panel_name, {})
+    panel_cfg = PANELS.get(panel_name) or {}
     status_opts = panel_cfg.get("status", {})
     
-    # Clean, descriptive boolean flags
-    opt_show_status_line     = status_opts.get("show_status_line", PANEL_STATUS_LINE)
-    opt_show_elapsed_time    = status_opts.get("show_elapsed_time", PANEL_STATUS_SHOW_ELAPSED)
-    opt_emoji_in_status_line = status_opts.get("emoji_in_status_line", PANEL_STATUS_EMOJI_TITLE)
-    opt_emoji_in_embed_title = status_opts.get("emoji_in_embed_title", PANEL_STATUS_EMOJI_IN_EMBED)
-    opt_animate_pending      = status_opts.get("animate_pending_emoji", PANEL_STATUS_ANIMATE_PENDING)
-    opt_animate_elapsed      = status_opts.get("animate_elapsed_time", PANEL_STATUS_ANIMATE_ELAPSED)
-    
+    # Read explicit panel config, fallback to Global ENV variables
+    opt_show_status_line       = status_opts.get("show_status_line", PANEL_STATUS_LINE)
+    opt_show_elapsed_time      = status_opts.get("show_elapsed_time", PANEL_STATUS_SHOW_ELAPSED)
+    opt_emoji_in_status_line   = status_opts.get("emoji_in_status_line", PANEL_STATUS_EMOJI_TITLE)
+    opt_emoji_in_embed_title   = status_opts.get("emoji_in_embed_title", PANEL_STATUS_EMOJI_IN_EMBED)
+    opt_animate_pending        = status_opts.get("animate_pending_emoji", PANEL_STATUS_ANIMATE_PENDING)
+    opt_animate_elapsed        = status_opts.get("animate_elapsed_time", PANEL_STATUS_ANIMATE_ELAPSED)
+    opt_append_status_to_reply = status_opts.get("append_status_to_reply", False)
+
+    # SAFETY CHECK: If this panel is orphaned (missing from memory), we cannot spawn a replacement. 
+    # Therefore, we must forcefully prevent the UI from being destroyed.
+    if not PANELS.get(panel_name):
+        opt_spawn_new = False
+        opt_archive_disable = False
+    else:
+        opt_spawn_new       = panel_cfg.get("spawn_new_on_click", PANEL_SPAWN_NEW_ON_CLICK)
+        opt_archive_disable = panel_cfg.get("archive_disable_buttons", PANEL_ARCHIVE_DISABLE_BUTTONS)
+
     # Custom Panel Emojis
     emojis_cfg = status_opts.get("emojis", {})
     emoji_pending     = emojis_cfg.get("pending", PANEL_STATUS_EMOJI_PENDING)
     emoji_pending_alt = emojis_cfg.get("pending_alt", PANEL_STATUS_EMOJI_PENDING_ALT)
     emoji_success     = emojis_cfg.get("success", PANEL_STATUS_EMOJI_SUCCESS)
     emoji_fail        = emojis_cfg.get("fail", PANEL_STATUS_EMOJI_FAIL)
-    
-    opt_spawn_new       = panel_cfg.get("spawn_new_on_click", PANEL_SPAWN_NEW_ON_CLICK)
-    opt_archive_disable = panel_cfg.get("archive_disable_buttons", PANEL_ARCHIVE_DISABLE_BUTTONS)
     
     anim_opts = {
         "animate_pending_emoji": opt_animate_pending,
@@ -1173,8 +1465,8 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
         if msg:
             content, embed = _build_panel_message(panel_name, panel_cfg)
             
-            # Fallback for dynamic edits
-            if not panel_cfg and msg.content:
+            # Fallback for dynamic edits: Prevent static titles from overwriting webhook reports
+            if not panel_cfg.get("content") and msg.content:
                 content = msg.content
                 for marker in [
                     f"\n{emoji_success} Last: `", f"\n{emoji_fail} Last: `", f"\n{emoji_pending} Last: `", "\nLast: `",
@@ -1185,6 +1477,7 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
                         break
                 embed = msg.embeds[0] if msg.embeds else None
             
+            # Append audit status line if enabled
             if opt_show_status_line:
                 ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p") if TIMEZONE else datetime.now().strftime("%I:%M %p").lstrip("0")
                 user_display = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "Someone")
@@ -1200,10 +1493,18 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
                 
             current_embed = embed
             current_content = content
-            archived_view = DashPanel(panel_name, panel_cfg, disabled=opt_archive_disable)
+            
+            if panel_cfg:
+                archived_view = DashPanel(panel_name, panel_cfg, disabled=opt_archive_disable)
+            elif msg.components:
+                archived_view = discord.ui.View.from_message(msg)
+                if opt_archive_disable:
+                    for child in archived_view.children:
+                        child.disabled = True
+            else:
+                archived_view = DashPanel(panel_name, panel_cfg, disabled=opt_archive_disable)
             
             await msg.edit(content=content, embed=embed, view=archived_view)
-            
             if opt_animate_pending or opt_animate_elapsed:
                 animation_task = asyncio.create_task(_animate_pending_message(msg, content, embed, archived_view, start_time, anim_opts))
 
@@ -1225,34 +1526,123 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
 
     # 3. Webhook call
     is_success = False
+    loading_msg = None
+    loading_anim_task = None
+    
+    # Panels require explicit 'show_loading_message: true' in config to display loading state
+    opt_show_loading = status_opts.get("show_loading_message", False)
+    opt_append_status_to_reply = status_opts.get("append_status_to_reply", False)
+    
+    # Spawn the temporary animated loading message
+    if opt_show_loading and interaction.channel:
+        display_cmd = f"/{command} {' '.join(args)}".strip()
+        loading_text = cfg.get("loading_text", COMMAND_LOADING_MESSAGE_TEXT).replace("{command}", display_cmd)
+        try:
+            loading_msg = await interaction.followup.send(loading_text, wait=True)
+            if opt_animate_elapsed or PANEL_STATUS_ANIMATE_ELAPSED:
+                loading_anim_task = asyncio.create_task(_animate_text_loading(loading_msg, loading_text, start_time))
+        except Exception as e:
+            log.warning(f"⚠️ Failed to post loading message: {e}")
+
     try:
         data = await post_to_webhook_async(command, payload)
+        elapsed = time.monotonic() - start_time
+        
+        # Cancel loading animation task before editing message
+        if loading_anim_task:
+            loading_anim_task.cancel()
+            try: await loading_anim_task
+            except asyncio.CancelledError: pass
+
         is_success = data.get("ok", True) if isinstance(data, dict) else True
 
         reply = (data or {}).get("reply") or {}
         if not isinstance(reply, dict): reply = {"content": str(reply)}
 
-        suppress = bool(reply.get("suppress") or reply.get("supress"))
+        suppress = parse_bool(reply.get("suppress") or reply.get("supress"))
         reply_content = (reply.get("content") or "").strip()
         
-        # Determine if the reply should be ephemeral (Private)
-        is_ephemeral = bool(reply.get("ephemeral", cfg.get("ephemeral_replies", False)))
-
-        if not suppress and reply_content:
-            await interaction.followup.send(content=reply_content[:2000], ephemeral=is_ephemeral)
-        
-        # Strict Persist Hierarchy: command -> panel -> env
-        p_persist = panel_cfg.get("persist", {})
-        if p_persist.get("on_response", PANEL_PERSIST_ON_RESPONSE):
-            panel_delay = float(p_persist.get("response_delay_sec", PANEL_PERSIST_ON_RESPONSE_DELAY))
-            delay = float(cfg.get("action_persist_delay", panel_delay))
+        if opt_append_status_to_reply:
+            status_emoji = emoji_success if is_success else emoji_fail
+            ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p") if TIMEZONE else datetime.now().strftime("%I:%M %p").lstrip("0")
+            user_display = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "Someone")
             
-            if delay > 0:
-                asyncio.create_task(_delayed_persist(interaction.channel.id, delay))
+            full_cmd = f"{command} {' '.join(args)}".strip()
+            status_line = f"{status_emoji} Last: `{full_cmd[:120]}` • {user_display} • {ts} ({elapsed:.1f}s)"
+            
+            reply_content = f"{reply_content}\n\n{status_line}".strip() if reply_content else status_line
+
+        is_ephemeral = parse_bool(reply.get("ephemeral", cfg.get("ephemeral_replies", False)))
+        reply_to_msg = parse_bool(reply.get("reply_to_message", cfg.get("reply_to_message", COMMAND_REPLY_TO_MESSAGE)))
+
+        embeds_raw = reply.get("embeds") or []
+        embeds = []
+        if isinstance(embeds_raw, list):
+            for e in embeds_raw[:10]:
+                if isinstance(e, dict):
+                    try: embeds.append(discord.Embed.from_dict(e))
+                    except Exception: pass
+
+        panel_cfg_dyn = reply.get("panel") or data.get("panel")
+        view = None
+        if isinstance(panel_cfg_dyn, dict):
+            panel_id = panel_cfg_dyn.get("id", f"dyn_{command}")
+            view = DashPanel(panel_id, panel_cfg_dyn)
+            PANELS[panel_id] = panel_cfg_dyn
+            DYNAMIC_PANELS[panel_id] = panel_cfg_dyn
+            _save_dynamic_routes()
+
+        has_display_data = bool(reply_content or embeds)
+
+        # Sender wrapper to update loading message or send as a new response
+        first_chunk = True
+        async def smart_sender(content=None, **kwargs):
+            nonlocal first_chunk
+            
+            # 🧹 Create a safe copy of kwargs for methods that reject the 'ephemeral' argument
+            safe_kwargs = kwargs.copy()
+            safe_kwargs.pop("ephemeral", None)
+            
+            if first_chunk:
+                first_chunk = False
+                if loading_msg:
+                    try:
+                        # Message.edit DOES NOT accept ephemeral
+                        await loading_msg.edit(content=content, **safe_kwargs)
+                        return
+                    except Exception as e:
+                        log.error(f"⚠️ Discord rejected final message edit in panel action: {e}")
+                
+                # Fallback if no loading message exists
+                if not is_ephemeral and interaction.channel and not reply_to_msg:
+                    # channel.send DOES NOT accept ephemeral
+                    await interaction.channel.send(content=content, **safe_kwargs)
+                else:
+                    # interaction.followup DOES accept ephemeral (so we use original kwargs)
+                    await interaction.followup.send(content=content, **kwargs)
             else:
-                trigger_immediate_persist(interaction.channel.id)
+                # Chunk 2+ always goes to channel, which DOES NOT accept ephemeral
+                await interaction.channel.send(content=content, **safe_kwargs)
+
+        if not suppress and has_display_data:
+            kwargs = {"ephemeral": is_ephemeral, "embeds": embeds}
+            if view: kwargs["view"] = view
+            await _send_chunked(smart_sender, reply_content, **kwargs)
+        else:
+            # If there is no chat content, clean up the loading pane
+            if loading_msg:
+                try: await loading_msg.delete()
+                except: pass
+            
+            # If a view was returned without text content, apply it to the original panel in-place
+            if view and not suppress:
+                archived_view = view
 
     except Exception as e:
+        if loading_anim_task: loading_anim_task.cancel()
+        if loading_msg: 
+            try: await loading_msg.delete()
+            except: pass
         log.error(f"⚠️ Exception triggering button command '{command}': {e}", exc_info=True)
         await interaction.followup.send(f"⚠️ Trigger failed: {type(e).__name__}: {e}", ephemeral=True)
         is_success = False
@@ -1287,11 +1677,30 @@ async def process_panel_action(interaction: discord.Interaction, panel_name: str
                         
                     kwargs["content"] = current_content
                     
+                if archived_view: 
+                    kwargs["view"] = archived_view
+                    
                 if kwargs:
-                    if archived_view: kwargs["view"] = archived_view
-                    await msg.edit(**kwargs)
+                    try:
+                        # This kills the inline spinner AND updates the panel instantly
+                        await interaction.edit_original_response(**kwargs)
+                    except:
+                        # Fallback just in case
+                        await msg.edit(**kwargs)
             except Exception as e:
                 log.warning(f"⚠️ Failed to update panel with final success/fail status: {e}")
+
+        # Schedule panel persistence check
+        if interaction.channel:
+            p_persist = panel_cfg.get("persist", {})
+            if p_persist.get("on_response", PANEL_PERSIST_ON_RESPONSE):
+                panel_delay = float(p_persist.get("response_delay_sec", PANEL_PERSIST_ON_RESPONSE_DELAY))
+                delay = float(cfg.get("action_persist_delay", cfg.get("panel_persist_delay", panel_delay)))
+                
+                if delay > 0:
+                    asyncio.create_task(_delayed_persist(interaction.channel.id, delay))
+                else:
+                    trigger_immediate_persist(interaction.channel.id)
 
 class DashModal(discord.ui.Modal):
     def __init__(self, panel_name: str, command: str, args: list, modal_cfg: dict):
@@ -1302,11 +1711,12 @@ class DashModal(discord.ui.Modal):
         self.inputs_dict = {}
 
         for inp in modal_cfg.get("inputs", [])[:5]:
+            placeholder_text = str(inp.get("placeholder", ""))[:100] if inp.get("placeholder") else None
             ti = discord.ui.TextInput(
-                label=inp.get("label", "Input")[:45],
-                custom_id=inp.get("id"),
+                label=str(inp.get("label", "Input"))[:45],
+                custom_id=str(inp.get("id", f"inp_{len(self.inputs_dict)}")),
                 style=discord.TextStyle.paragraph if inp.get("long") else discord.TextStyle.short,
-                placeholder=inp.get("placeholder", ""),
+                placeholder=placeholder_text,
                 required=inp.get("required", True)
             )
             self.add_item(ti)
@@ -1357,9 +1767,12 @@ class DashButton(discord.ui.Button):
             await interaction.response.send_modal(DashModal(self.panel_name, self.command, self.args, self.cfg["modal"]))
             return
 
-        await interaction.response.defer(ephemeral=True)
-        await process_panel_action(interaction, self.panel_name, self.command, self.args)
+        # DYNAMIC DEFER: Prevents sticky "Bot is thinking" messages
+        cfg = COMMANDS.get(self.command) or {}
+        is_ephemeral = parse_bool(cfg.get("ephemeral_replies", False))
+        await interaction.response.defer(ephemeral=is_ephemeral)
 
+        await process_panel_action(interaction, self.panel_name, self.command, self.args)
 
 class DashSelect(discord.ui.Select):
     def __init__(self, panel_name: str, select_cfg: dict, index: int):
@@ -1428,9 +1841,12 @@ class DashSelect(discord.ui.Select):
         for opt in self.options: 
             opt.default = False
 
-        await interaction.response.defer(ephemeral=True)
-        await process_panel_action(interaction, self.panel_name, command, args)
+        # DYNAMIC DEFER: Prevents sticky "Bot is thinking" messages
+        cfg = COMMANDS.get(command) or {}
+        is_ephemeral = parse_bool(cfg.get("ephemeral_replies", False))
+        await interaction.response.defer(ephemeral=is_ephemeral)
 
+        await process_panel_action(interaction, self.panel_name, command, args)
 class DashPanel(discord.ui.View):
     def __init__(self, panel_name: str, panel_cfg: dict, *, disabled: bool = False):
         super().__init__(timeout=None)
@@ -1538,6 +1954,9 @@ async def api_dynamic_handler(request: web.Request) -> web.Response:
     log.info(f"🌐 [API] Connection attempt from IP: {client_ip} | Agent: {user_agent}")
 
     auth_header = request.headers.get("Authorization") or request.headers.get("X-DashCord-Token")
+    if auth_header and auth_header.startswith("Bearer "):
+        auth_header = auth_header[7:].strip()
+
     if DASHCORD_SHARED_SECRET and auth_header != DASHCORD_SHARED_SECRET:
         log.warning(f"🚫 [API] UNAUTHORIZED access attempt from IP: {client_ip}")
         return _json_reply({"error": "Unauthorized"}, status=401)
@@ -1734,13 +2153,31 @@ def create_dynamic_slash_command(cmd_name: str, cmd_cfg: dict):
         
         log.info(f"⚡ User '{interaction.user.display_name}' triggered slash command '/{cmd_name}' in channel {interaction.channel_id}")
         
+        start_time = time.monotonic()
+        show_elapsed = cmd_cfg.get("show_elapsed_time", COMMAND_SHOW_ELAPSED_TIME)
+
         try:
             data = await post_to_webhook_async(cmd_name, payload)
+            elapsed = time.monotonic() - start_time
             
-            # 2. Parse the reply to check for Webhook overrides or Suppress flags
+            # Parse the reply
             reply = (data or {}).get("reply") or {}
             if not isinstance(reply, dict):
                 reply = {"content": str(reply)}
+
+            # Dynamically inject the final elapsed time and context
+            if show_elapsed:
+                content = reply.get("content", "")
+                
+                # Build a panel-quality audit line
+                status_emoji = COMMAND_REACTION_SUCCESS if data.get("ok", True) else COMMAND_REACTION_FAIL
+                ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p") if TIMEZONE else datetime.now().strftime("%I:%M %p").lstrip("0")
+                user_display = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", "Someone")
+                full_cmd = f"/{cmd_name} {arguments}".strip() if arguments else f"/{cmd_name}"
+                
+                status_line = f"{status_emoji} Last: `{full_cmd[:120]}` • {user_display} • {ts} ({elapsed:.1f}s)"
+                
+                reply["content"] = f"{content}\n\n{status_line}".strip() if content else status_line
 
             suppress = bool(reply.get("suppress") or reply.get("supress"))
             content = (reply.get("content") or "").strip()
@@ -1753,15 +2190,44 @@ def create_dynamic_slash_command(cmd_name: str, cmd_cfg: dict):
                         try: embeds.append(discord.Embed.from_dict(e))
                         except Exception: pass
             
-            # 3. Allow the Webhook JSON payload to override the config ephemeral state
-            final_ephemeral = bool(reply.get("ephemeral", cmd_ephemeral))
+            # Parse Dynamic Panel config and SAVE IT to memory/disk
+            panel_cfg_dyn = reply.get("panel") or data.get("panel")
+            view = None
+            if isinstance(panel_cfg_dyn, dict):
+                panel_id = panel_cfg_dyn.get("id", f"dyn_{cmd_name}")
+                view = DashPanel(panel_id, panel_cfg_dyn)
+                PANELS[panel_id] = panel_cfg_dyn
+                DYNAMIC_PANELS[panel_id] = panel_cfg_dyn
+                _save_dynamic_routes()
 
-            if not suppress and (content or embeds):
-                # Use interaction.followup to safely send the private Slash reply!
-                await interaction.followup.send(content=content[:2000], embeds=embeds, ephemeral=final_ephemeral)
+            # 3. Allow the Webhook JSON payload to override the config ephemeral state
+            final_ephemeral = parse_bool(reply.get("ephemeral", cmd_ephemeral))
+            reply_to_msg = parse_bool(reply.get("reply_to_message", cmd_cfg.get("reply_to_message", COMMAND_REPLY_TO_MESSAGE)))
+
+            if not suppress and (content or embeds or view):
+                kwargs = {"ephemeral": final_ephemeral, "embeds": embeds}
+                if view:
+                    kwargs["view"] = view
+                
+                # Post as a General Message if reply_to_message is False
+                if not final_ephemeral and interaction.channel and not reply_to_msg:
+                    try: await interaction.delete_original_response()
+                    except: pass
+                    kwargs.pop("ephemeral", None)
+                    await _send_chunked(interaction.channel.send, content, **kwargs)
+                else:
+                    await _send_chunked(interaction.followup.send, content, **kwargs)
                 
         except Exception as e:
-            await interaction.followup.send(f"⚠️ Trigger failed: {e}", ephemeral=True)
+            await interaction.followup.send(f"⚠️ Trigger failed: {e}", ephemeral=cmd_ephemeral)
+            
+        finally:
+            if interaction.channel_id:
+                delay = float(cmd_cfg.get("action_persist_delay", cmd_cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY)))
+                if delay > 0:
+                    asyncio.create_task(_delayed_persist(interaction.channel_id, delay))
+                else:
+                    trigger_immediate_persist(interaction.channel_id)
 
     desc = cmd_cfg.get("description", f"Trigger the {cmd_name} webhook")[:100]
     cmd = app_commands.Command(name=cmd_name, description=desc, callback=slash_callback)
@@ -1787,8 +2253,11 @@ async def on_ready():
             log.error(f"⚠️ Failed to register slash command '{cmd_name}': {e}")
 
     # Tell Discord's API to update the Slash Command menu globally
-    await bot.tree.sync()
-    log.info("Synced application commands successfully.")
+    try:
+        await bot.tree.sync()
+        log.info("Synced application commands successfully.")
+    except Exception as e:
+        log.error(f"⚠️ Failed to sync application commands with Discord: {e}")
 
 @bot.event
 async def on_disconnect():
@@ -1865,6 +2334,9 @@ async def on_message(message: discord.Message):
             
             log.info(f"📤 User '{message.author.display_name}' triggered upload-only command '{command}' with {len(message.attachments)} file(s)")
 
+            if COMMAND_REACTION_ENABLED:
+                await _add_reaction_safe(message, COMMAND_REACTION_PENDING)
+
             await _fanout_attachments_to_command(message, command, payload)
             return
 
@@ -1929,8 +2401,13 @@ async def on_message(message: discord.Message):
 
     cfg = _get_cmd_cfg(command)
     
-    # Check if reactions are disabled for this specific command
     allow_reactions = cfg.get("reactions_enabled", COMMAND_REACTION_ENABLED)
+    show_loading = cfg.get("loading_message", COMMAND_LOADING_MESSAGE_ENABLED)
+    show_elapsed = cfg.get("show_elapsed_time", COMMAND_SHOW_ELAPSED_TIME)
+    
+    # Safely display the full command and arguments without trimming (capped at 120 chars)
+    display_cmd = message.content[:120] + ("..." if len(message.content) > 120 else "")
+    loading_text = cfg.get("loading_text", COMMAND_LOADING_MESSAGE_TEXT).replace("{command}", display_cmd)
 
     if cfg.get("accept_attachments") and message.attachments:
         log.info(f"📤 User '{message.author.display_name}' triggered command '{command}' with {len(message.attachments)} file(s)")
@@ -1942,30 +2419,135 @@ async def on_message(message: discord.Message):
     if allow_reactions:
         await _add_reaction_safe(message, COMMAND_REACTION_PENDING)
 
+    loading_msg = None
+    anim_task = None
+    start_time = time.monotonic()
+
+    # 1. Spawn the temporary loading pane
+    if show_loading:
+        try:
+            loading_msg = await message.reply(loading_text)
+            if PANEL_STATUS_ANIMATE_ELAPSED:
+                anim_task = asyncio.create_task(_animate_text_loading(loading_msg, loading_text, start_time))
+        except Exception as e:
+            log.warning(f"⚠️ Failed to post loading message: {e}")
+
     try:
         data = await post_to_webhook_async(command, payload)
+        elapsed = time.monotonic() - start_time
         
+        # Cancel loading animation task before editing message
+        if anim_task:
+            anim_task.cancel()
+            try:
+                await anim_task
+            except asyncio.CancelledError:
+                pass
+
         if allow_reactions:
             await _remove_reaction_safe(message, COMMAND_REACTION_PENDING)
-            if data is not None:
+            if data is not None and data.get("ok", True):
                 await _add_reaction_safe(message, COMMAND_REACTION_SUCCESS)
             else:
                 await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
                 
-        await send_reply(message.channel, data)
-
-        delay = float(cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY))
-        if delay > 0:
-            asyncio.create_task(_delayed_persist(message.channel.id, delay))
-        else:
-            trigger_immediate_persist(message.channel.id)
+        # 2. Inject context-rich status line into the final response
+        if show_elapsed and data:
+            reply = data.setdefault("reply", {})
+            if not isinstance(reply, dict):
+                reply = {"content": str(reply)}
+                data["reply"] = reply
             
+            c = reply.get("content", "")
+            
+            # Build a panel-quality audit line
+            status_emoji = COMMAND_REACTION_SUCCESS if data.get("ok", True) else COMMAND_REACTION_FAIL
+            ts = datetime.now(ZoneInfo(TIMEZONE)).strftime("%-I:%M %p") if TIMEZONE else datetime.now().strftime("%I:%M %p").lstrip("0")
+            user_display = getattr(message.author, "display_name", None) or getattr(message.author, "name", "Someone")
+            
+            status_line = f"{status_emoji} Last: `{display_cmd}` • {user_display} • {ts} ({elapsed:.1f}s)"
+            
+            # Append it nicely (or make it the only content if webhook returned empty text)
+            reply["content"] = f"{c}\n\n{status_line}".strip() if c else status_line
+
+        # 3. Handle formatting and chunking
+        reply = (data or {}).get("reply") or {}
+        if not isinstance(reply, dict): reply = {"content": str(reply)}
+        suppress = bool(reply.get("suppress") or reply.get("supress"))
+        reply_content = (reply.get("content") or "").strip()
+        
+        embeds_raw = reply.get("embeds") or []
+        embeds = []
+        if isinstance(embeds_raw, list):
+            for e in embeds_raw[:10]:
+                if isinstance(e, dict):
+                    try: embeds.append(discord.Embed.from_dict(e))
+                    except Exception: pass
+
+        panel_cfg_dyn = reply.get("panel") or data.get("panel")
+        view = None
+        if isinstance(panel_cfg_dyn, dict):
+            panel_id = panel_cfg_dyn.get("id", f"dyn_{command}")
+            view = DashPanel(panel_id, panel_cfg_dyn)
+            PANELS[panel_id] = panel_cfg_dyn
+            DYNAMIC_PANELS[panel_id] = panel_cfg_dyn
+            _save_dynamic_routes()
+            
+        # 4. Handle response delivery via message edit or new reply
+        first_chunk = True
+        
+        # Determine if we use an Interaction Reply or a General Channel Message
+        reply_to_msg = parse_bool(reply.get("reply_to_message", cfg.get("reply_to_message", COMMAND_REPLY_TO_MESSAGE)))
+
+        async def smart_sender(content=None, **kwargs):
+            nonlocal first_chunk
+            if first_chunk:
+                first_chunk = False
+                if loading_msg:
+                    try:
+                        await loading_msg.edit(content=content, **kwargs)
+                        return
+                    except discord.HTTPException as e:
+                        log.error(f"⚠️ Discord rejected the final message edit: {e}")
+                    except Exception as e:
+                        log.error(f"⚠️ Unexpected error editing final message: {e}", exc_info=True)
+                
+                # Fallback if no loading message, check if we should reply
+                if reply_to_msg:
+                    await message.reply(content=content, **kwargs)
+                else:
+                    await message.channel.send(content=content, **kwargs)
+            else:
+                # Chunks 2+ are sent as channel messages
+                await message.channel.send(content=content, **kwargs)
+
+        if not suppress and (reply_content or embeds or view):
+            kwargs = {"embeds": embeds}
+            if view:
+                kwargs["view"] = view
+            await _send_chunked(smart_sender, reply_content, **kwargs)
+        elif loading_msg:
+            # Clean up the loading message if the webhook suppressed output
+            try: await loading_msg.delete()
+            except: pass
+
     except Exception as e:
+        if anim_task: anim_task.cancel()
+        if loading_msg: 
+            try: await loading_msg.delete()
+            except: pass
         log.error(f"⚠️ Exception triggering command '{command}': {e}", exc_info=True)
         await _remove_reaction_safe(message, COMMAND_REACTION_PENDING)
         await _add_reaction_safe(message, COMMAND_REACTION_FAIL)
         await message.reply(f"⚠️ Trigger failed: {type(e).__name__}: {e}")
 
+    finally:
+        if message.channel:
+            delay = float(cfg.get("action_persist_delay", cfg.get("panel_persist_delay", PANEL_PERSIST_ON_RESPONSE_DELAY)))
+            if delay > 0:
+                asyncio.create_task(_delayed_persist(message.channel.id, delay))
+            else:
+                trigger_immediate_persist(message.channel.id)
 
 # ---- persistence scheduler state ----
 PANEL_PERSIST_LAST: dict[str, float] = {}  # key: f"{channel_id}:{panel_name}"
@@ -2008,6 +2590,74 @@ async def panel_persist_loop():
 
             PANEL_PERSIST_LAST[key] = now_ts
 
+async def api_send_message_handler(request: web.Request) -> web.Response:
+    """API Endpoint to send a raw message/embed to a specific Discord channel."""
+    client_ip = request.remote
+    auth_header = request.headers.get("Authorization") or request.headers.get("X-DashCord-Token")
+    if auth_header and auth_header.startswith("Bearer "):
+        auth_header = auth_header[7:].strip()
+    
+    if DASHCORD_SHARED_SECRET and auth_header != DASHCORD_SHARED_SECRET:
+        log.warning(f"🚫 [API] UNAUTHORIZED message attempt from IP: {client_ip}")
+        return _json_reply({"error": "Unauthorized"}, status=401)
+        
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return _json_reply({"error": f"Invalid JSON: {e}"}, status=400)
+        
+    channel_id = payload.get("channel_id")
+    content    = str(payload.get("content", "") or "")
+    embeds_raw = payload.get("embeds", []) or []
+    
+    try:
+        delay = max(0.0, float(payload.get("delay", 0)))
+    except (ValueError, TypeError):
+        delay = 0.0
+    
+    if not channel_id:
+        return _json_reply({"error": "Missing 'channel_id'"}, status=400)
+        
+    try:
+        cid_int = int(channel_id)
+    except (ValueError, TypeError):
+        return _json_reply({"error": f"Invalid channel_id: {channel_id!r}"}, status=400)
+
+    if not content and not embeds_raw:
+        return _json_reply({"error": "Must provide 'content' or 'embeds'"}, status=400)
+
+    try:
+        # Fetch the destination channel
+        channel = bot.get_channel(cid_int) or await bot.fetch_channel(cid_int)
+        if not channel:
+            return _json_reply({"error": f"Channel {channel_id} not found or inaccessible."}, status=404)
+            
+        # Parse embeds safely
+        embeds = []
+        if isinstance(embeds_raw, list):
+            for e in embeds_raw[:10]:
+                try: embeds.append(discord.Embed.from_dict(e))
+                except Exception: pass
+                
+        # Background task to handle delay and sending
+        async def background_send():
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                await _send_chunked(channel.send, content, embeds=embeds)
+                log.info(f"📤 [API] Successfully sent automated message to channel {channel_id}")
+            except Exception as e:
+                log.error(f"⚠️ [API] Failed to send background message to {channel_id}: {e}", exc_info=True)
+
+        # Fire it in the background so the API responds instantly to n8n
+        asyncio.create_task(background_send())
+        
+        return _json_reply({"status": "success", "message": f"Message queued with {delay}s delay"})
+        
+    except Exception as e:
+        log.error(f"⚠️ [API] Failed to queue message to {channel_id}: {e}", exc_info=True)
+        return _json_reply({"error": str(e)}, status=500)
+    
 # Attach the API server to the bot's background loop natively
 async def _setup_hook():
     global AIOHTTP_SESSION
@@ -2033,6 +2683,7 @@ async def _setup_hook():
     app = web.Application()
     app.router.add_post('/api/dynamic', api_dynamic_handler)
     app.router.add_post('/api/send_panel', api_dynamic_handler) 
+    app.router.add_post('/api/send_message', api_send_message_handler) 
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -2040,7 +2691,16 @@ async def _setup_hook():
     await site.start()
     log.info(f"🌐 Dynamic UI API listening on port {API_PORT}")
 
-# Bind it to discord.py's native hook
+# Bind clean session teardown on shutdown
+_orig_bot_close = bot.close
+
+async def _bot_close_cleanup():
+    global AIOHTTP_SESSION
+    if AIOHTTP_SESSION and not AIOHTTP_SESSION.closed:
+        await AIOHTTP_SESSION.close()
+    await _orig_bot_close()
+
+bot.close = _bot_close_cleanup
 bot.setup_hook = _setup_hook
 
 # ----------------------------

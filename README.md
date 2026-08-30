@@ -42,13 +42,16 @@ While platforms like n8n and Node-RED have native Discord nodes, they are often 
 
 - **⚡ Dynamic Commands:** Add new slash-free commands (e.g., `!weather`, `!deploy`) just by editing a JSON file.
 - **🎛️ Sticky Dashboard Panels:** Generate persistent UI button panels in specific channels. The bot can automatically "persist" these panels, moving them to the bottom of the chat so they never get buried. Users can click buttons to trigger workflows without typing.
-- **📁 Intelligent File Fan-out:** Forward files directly to your webhooks. Can auto-parse JSON attachments, convert to Base64, and dynamically fan-out requests (upload 5 files, it triggers 5 separate webhook calls).
-- **🎭 Dynamic Body Templating:** Inject Discord metadata (like `{{discord.user_display}}` or `{{discord.channel_id}}`) directly into the JSON payload sent to your webhook, molding the data to fit your API perfectly.
+- **📁 Flexible File Ingestion (Fan-out & Batch Mode):** Forward files directly to your webhooks. Auto-parse JSON attachments, convert to Base64, and choose between fan-out (1 webhook per file) or batch mode (bundle all uploaded files into an `attachments` array in a single webhook).
+- **🎭 Dynamic Body Templating:** Inject Discord metadata (like `{{discord.user_display}}`, `{{discord.user_roles}}`, or `{{discord.channel_id}}`) directly into the JSON payload sent to your webhook, molding the data to fit your API perfectly.
 - **🪝 Dynamic Response Templating:** Connect buttons directly to 3rd-party APIs (OpenAI, GitHub, Local servers). DashCord can intercept raw JSON responses and dynamically map them into beautiful Discord Embeds without needing a middleman server to translate the data!
+- **🔑 Personal User API Tokens:** Dynamically inject individual Bearer tokens based on the triggering Discord User ID (`USER_TOKEN_<USER_ID>`) to authorize multi-tenant automation workflows.
+- **✂️ Long-Message Chunking & Codeblock Continuity:** Automatically splits long webhook responses (>1900 chars) cleanly across multiple Discord messages while preserving markdown code block syntax (````lang ... ````) and leading indentation.
 - **🔒 Security Built-In:** Restrict specific commands to specific Discord channels or user IDs. Secures outbound requests with a custom `X-DashCord-Token` header.
-- **💬 Native Discord Replies:** Your webhook can respond with JSON containing plain text or rich Discord Embeds, and the bot will cleanly post it back to the channel.
+- **💬 Native Discord Replies & Dynamic Panels:** Your webhook can respond with JSON containing plain text, rich Discord Embeds, or even dynamic UI panels (`reply.panel`), and the bot will cleanly post or update them in-place.
 - **👁️ Visual Status Indicators:** Real-time emoji reactions (⏳, ✅, ❌) let users know exactly when a command is processing, succeeded, or failed without needing extra text replies.
-- **⏱️ Live Ticking Animations:** Turn on elapsed-time animations and let users watch a live `(2.5s)` counter tick up in real-time while waiting for your heavy n8n/Make workflows to finish. 
+- **⏱️ Live Ticking Animations & Loading Panes:** Turn on animated loading messages and watch a live `(2.5s)` counter tick up in real-time before morphing directly into the final webhook reply.
+- **📡 Programmatic REST API & Message Dispatcher:** Create, update, refresh, or delete UI dashboards on the fly via REST, or push automated channel messages with optional delay timers (`POST /api/send_message`).
 - **🥷 Stealth & Ephemeral Routing:** Configure specific commands to reply privately (so only the clicking user sees the result) and disable public bot reactions (`⏳`) for total chat cleanliness.
 - **🚧 API Maintenance Mode:** Disable UI panels on the fly via the API. Keep the panel visible in chat, but grey out all buttons and dropdowns while your backend is restarting.
 - **⚙️ Max Configuration:** Everything is overrideable. Set global defaults in your `.env`, but override emojis, delays, animations, and privacy settings down to the individual panel or command level.
@@ -142,6 +145,10 @@ Commands map a typed Discord message (or Slash Command) to a webhook URL. You ha
 *   `headers`: A dictionary of custom HTTP headers to send to your webhook (Overrides the global `X-DashCord-Token`).
 *   `body_template`: A custom JSON structure to map exactly what your webhook expects instead of the default DashCord schema.
 *   `response_template`: A custom JSON structure used to map a 3rd-party API's raw JSON response into a valid Discord reply (supports dot-notation parsing, embeds, and arrays).
+*   `reply_to_message`: If `true`, the bot responds by replying directly to the user's trigger message. If `false`, posts as a general message in the channel.
+*   `loading_message`: If `true`, spawns a temporary loading message in chat while waiting for the webhook to complete.
+*   `loading_text`: Custom loading text template (e.g. `"⏳ Working on {command}..."`).
+*   `show_elapsed_time`: Appends an audit status line with elapsed time (e.g. `✅ Last: !deploy • User • 4:05 PM (2.1s)`) to the final reply.
 *   `api_protected`: If `true`, completely blocks the Dynamic API from viewing or editing this command.
 *   `api_writable`: If `true`, explicitly allows the Dynamic API to edit this command at runtime (if it's a static route).
 
@@ -197,8 +204,33 @@ You can allow commands to accept attachments, or even fire automatically when a 
 > **💡 Pro-Tip: Wildcard Extensions**
 > If you want a command to accept any file upload regardless of the file type, simply set `"extensions": []` or omit the `"extensions"` key entirely from the `attachment_rules` block.
 
-> **💡 The "Fan-out" Rule**
-> DashCord handles multiple file uploads intelligently. If a user uploads **5 files at once**, the bot will "fan-out" and trigger **5 separate webhook calls** (one for each file). This makes it much easier to build your n8n/Make workflows, as you only ever have to handle **one file at a time** in your automation logic!
+> **💡 The "Fan-out" vs "Batch" Rule**
+> By default (`"fanout": true`), if a user uploads **5 files at once**, DashCord fans out and triggers **5 separate webhook calls** (one for each file). This simplifies downstream workflows by handling one file per execution.
+>
+> If you set `"fanout": false`, DashCord switches to **Batch Ingestion Mode**, sending all uploaded files inside a single webhook POST request with an `attachments` array:
+> ```json
+> {
+>   "source": "discord",
+>   "event_type": "command",
+>   "command": "batch-upload",
+>   "attachments": [
+>     {
+>       "attachment": { "filename": "doc1.txt", "size": 1204, "content_type": "text/plain", "url": "..." },
+>       "attachment_text": "...",
+>       "attachment_bytes_len": 1204,
+>       "attachment_b64": "...",
+>       "source_meta_b64": "..."
+>     },
+>     {
+>       "attachment": { "filename": "doc2.txt", "size": 842, "content_type": "text/plain", "url": "..." },
+>       "attachment_text": "...",
+>       "attachment_bytes_len": 842,
+>       "attachment_b64": "...",
+>       "source_meta_b64": "..."
+>     }
+>   ]
+> }
+> ```
 
 > **🎭 Attachment Feedback**
 > You can control how the bot replies to uploads using the `attachment_reply` block.
@@ -274,6 +306,8 @@ Here is the **Ultimate Panel Schema** showing every possible configuration key:
       "emoji_in_embed_title": true,
       "animate_pending_emoji": true,
       "animate_elapsed_time": true,
+      "show_loading_message": false,
+      "append_status_to_reply": false,
       "emojis": {
         "pending": "🔄",
         "pending_alt": "🔃",
@@ -309,7 +343,9 @@ Here is the **Ultimate Panel Schema** showing every possible configuration key:
 *   `emoji_in_status_line` / `emoji_in_embed_title`: Toggles whether status emojis appear in the text line and embed title.
 *   `animate_pending_emoji`: Alternates back and forth between your `pending` and `pending_alt` emojis while the webhook is processing.
 *   `animate_elapsed_time`: Spawns a live, ticking timer `(1.5s -> 3.0s)` in the UI while waiting for your webhook.
-*   `emojis`: Don't like the `.env` default `⏳`, `✅`, `❌`? Define completely custom emojis for this specific panel here.
+*   `show_loading_message`: If `true`, spawns a temporary animated loading pane in chat when a button is clicked.
+*   `append_status_to_reply`: Appends the status audit line (`✅ Last: ... (1.5s)`) directly to the webhook's response reply message instead of modifying the panel.
+*   `emojis`: Define custom emojis for pending, success, and fail states.
   
 ---
 
@@ -462,6 +498,8 @@ When a user uploads a file called `vocal_sample.wav` and types `!ai-task transcr
 * `{{event_type}}`: The raw event trigger type (e.g., `"command"`, `"upload-only"`, or `"panel_action"`).
 * `{{meta.timezone}}`: The active timezone of the bot (e.g., `America/New_York`).
 * `{{discord.user_name}}`: The actual Discord account username/handle (e.g., `cooluser123` vs. display name `CoolUser`).
+* `{{discord.user_roles}}`: A list of Discord Role IDs assigned to the user (excluding `@everyone`), e.g. `["123456789012345678"]`.
+* `{{discord.user_role_names}}`: A list of Discord Role names assigned to the user, e.g. `["Admin", "DevOps"]`.
 * `{{discord.guild_id}}` / `{{discord.guild_name}}`: The server ID and server Name where the action was taken.
 * `{{discord.message_id}}` / `{{discord.interaction_id}}`: Unique Discord snowflake IDs for message mapping, audit trails, or debug logging.
   
@@ -487,6 +525,20 @@ By default, DashCord secures your webhooks using the `X-DashCord-Token` header g
 ```
 *Note: Any custom headers defined in `routes.json` will override the global default token if they share the same key. If omitted, the bot falls back to using the global `.env` secret.*
 
+#### 🔑 Personal User API Tokens (`USER_TOKEN_<USER_ID>`)
+If your backend or n8n workflow manages permissions on a per-user basis, you can define individual API Bearer tokens in your `.env` or `secrets.env` mapped by Discord User Snowflake ID:
+
+```ini
+USER_TOKEN_1443414759046250536=dc_usr_token_abcdef123456
+USER_TOKEN_941490597930348614=dc_usr_token_789012ghijkl
+```
+
+When a user with a configured token triggers any command or panel button, DashCord automatically injects their token as:
+```http
+Authorization: Bearer dc_usr_token_abcdef123456
+```
+*(If `DASHCORD_SHARED_SECRET` is set, DashCord still transmits `X-DashCord-Token` concurrently so your server can verify bot integrity while authorizing the individual user).*
+
 ---
 
 ## 📦 Default Webhook Payload
@@ -510,6 +562,8 @@ If you **do not** use a `body_template`, your Webhook will receive DashCord's de
     "user_id": "123456...",
     "user_name": "cooluser123",
     "user_display": "CoolUser",
+    "user_roles": ["123456789012345678", "987654321098765432"],
+    "user_role_names": ["Admin", "DevOps"],
     "message_id": "123456..."
   },
   "meta": {
@@ -588,6 +642,40 @@ If you want to keep the chat completely clean, your webhook can force the reply 
 }
 ```
 *(Note: If a command is configured with `"ephemeral_replies": true` in `routes.json`, all replies will be private automatically. This JSON flag allows your webhook logic to conditionally override that setting on the fly).*
+
+#### 🎛️ Dynamic Interactive Panels in Replies (`reply.panel`)
+Your webhook response can dynamically return a panel UI schema under `"panel"` or `"reply": { "panel": { ... } }`. DashCord will attach interactive buttons and dropdowns directly to the reply, and save dynamic panels to disk:
+
+```json
+{
+  "reply": {
+    "content": "Select a maintenance task to execute:",
+    "panel": {
+      "id": "dyn_maintenance",
+      "buttons": [
+        { "label": "Purge Cache", "command": "ping", "args": ["purge"], "style": "danger", "emoji": "🧹" },
+        { "label": "Health Check", "command": "uptime", "style": "success", "emoji": "🩺" }
+      ],
+      "selects": [
+        {
+          "placeholder": "Choose server action...",
+          "options": [
+            { "label": "Restart Node", "command": "ping", "args": ["restart"], "emoji": "🔄" },
+            { "label": "View Logs", "command": "uptime", "emoji": "📋" }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+*   **Command Linking:** Any `command` specified in dynamic buttons or dropdowns will execute against your active commands defined in `routes.json`.
+*   **In-Place UI Updates:** If a webhook returns `"panel"` with *no text content* (or empty string), DashCord will automatically update the original calling panel view in-place instead of posting a new message.
+
+#### ✂️ Smart Message Chunking (>2000 Chars)
+If your webhook response exceeds Discord's 2,000-character limit, DashCord uses `_send_chunked` to automatically split the output at paragraph boundaries and newlines. 
+- **Code Block Continuity:** If a chunk cuts off inside an open markdown code block (````json ... ````), DashCord cleanly closes the block at the end of the chunk and reopens ````json on the next chunk so formatting is never broken.
+- **Indentation Protection:** Prepends zero-width spaces to preserved whitespace so Discord does not strip leading indentation.
 
 #### 🪵 Auto-Formatting Console Outputs (`stdout`)
 If you are running automation pipelines that execute shell commands or script tasks, formatting them into rich JSON embeds can be tedious. If your webhook response returns a root `"stdout"` key instead of a `"reply"`, DashCord automatically formats it into a cleanly styled terminal code block:
@@ -1049,6 +1137,54 @@ curl -X POST http://127.0.0.1:8080/api/dynamic \
 
 ---
 
+### 📤 Direct REST Message Dispatcher (`POST /api/send_message`)
+
+Send messages or Discord embeds directly to any Discord channel programmatically without triggering a command. Supports optional delayed background execution.
+
+**Endpoint:** `POST /api/send_message`
+
+**Payload Schema:**
+```json
+{
+  "channel_id": "112233445566778899",
+  "content": "🚀 Automated build #402 deployed successfully!",
+  "embeds": [
+    {
+      "title": "Build Summary",
+      "description": "Environment: `production`\nStatus: `Passed`",
+      "color": 65280
+    }
+  ],
+  "delay": 2.5
+}
+```
+
+*   `channel_id`: **(Required)** Target Discord channel snowflake ID.
+*   `content`: Raw text content (supports markdown and automatic chunking if >2000 chars).
+*   `embeds`: Array of Discord Embed JSON objects (up to 10).
+*   `delay`: Optional delay in seconds before sending. Runs as a background task, returning `200 OK` immediately.
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/send_message \
+  -H "Content-Type: application/json" \
+  -H "X-DashCord-Token: YOUR_SECRET" \
+  -d '{
+    "channel_id": "112233445566778899",
+    "content": "📢 Backup completed on storage array 1.",
+    "delay": 0
+  }'
+```
+
+*Response (200 OK):*
+```json
+{
+  "status": "success",
+  "message": "Message queued with 0.0s delay"
+}
+```
+
+---
+
 ### 🔧 Pro Configuration (.env)
 
 DashCord is highly customizable. You can fine-tune exactly how the bot, your webhooks, and your interactive panels behave by modifying your `.env` file. 
@@ -1062,13 +1198,20 @@ DashCord is highly customizable. You can fine-tune exactly how the bot, your web
 - `DASHCORD_DEBUG`: Enables verbose internal debug logging in the console (Default: `false`).
 - `ROUTES_PATH`: The file path to your routing configuration (Default: `routes.json` in the bot's root directory).
 - `DYNAMIC_ROUTES_PATH`: The file path to your dynamic routing configuration (Default: `dynamic_routes.json` in the bot's config directory).
+
+#### 💬 Chat Commands & Loading Indicators
 - `COMMAND_REACTION_ENABLED`: Automatically add emoji reactions to user messages to show command status (pending, success, fail) (Default: `true`).
 - `COMMAND_REACTION_PENDING`: The emoji to show while a command or file upload is being processed by your webhook (Default: `⏳`).
 - `COMMAND_REACTION_SUCCESS`: The emoji to show when a command succeeds (Default: `✅`).
 - `COMMAND_REACTION_FAIL`: The emoji to show when a command or webhook fails (Default: `❌`).
+- `COMMAND_LOADING_MESSAGE_ENABLED`: Spawns a temporary loading message in chat while waiting for command webhooks to reply (Default: `false`).
+- `COMMAND_LOADING_MESSAGE_TEXT`: Template text for the loading message (Default: `⏳ Processing \`{command}\`...`).
+- `COMMAND_SHOW_ELAPSED_TIME`: Injects an audit status line with elapsed time into the final text reply (Default: `false`).
+- `COMMAND_REPLY_TO_MESSAGE`: Whether command responses are posted as Discord inline replies referencing the user message (Default: `true`).
   
 #### 🌐 Webhook Settings
 - `DASHCORD_SHARED_SECRET`: A secret string sent as the `X-DashCord-Token` HTTP header to secure your webhooks from unauthorized requests.
+- `USER_TOKEN_<DISCORD_USER_ID>`: Optional per-user Bearer token dynamically injected as `Authorization: Bearer <token>` when that specific user triggers a command or panel.
 - `HTTP_TIMEOUT_SECONDS`: How long the bot waits for your webhook to respond before throwing a timeout error (Default: `20`).
 - `VERIFY_TLS`: Whether to verify SSL/TLS certificates when hitting your webhook URLs. Set to `false` if you are using self-signed certs on a local network (Default: `true`).
 - `DEBUG_WEBHOOK`: Prints beautifully formatted, raw webhook request and response payloads directly to the console for API troubleshooting (Default: `false`).
